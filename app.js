@@ -29,6 +29,102 @@
   };
   const reduceMotion = () => window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+  /* ---------- in-page timers ----------
+     A dial you tap to start; one runs at a time; a soft chime when it ends. */
+  let ticker = null;
+  let audio = null;
+  const BASE_TITLE = document.title;
+  const mmss = (sec) => { const t = Math.max(0, Math.ceil(sec)); return Math.floor(t / 60) + ":" + pad(t % 60); };
+
+  const timerHTML = (secs, label, opts = {}) => {
+    const locked = !!opts.locked;
+    return `
+    <div class="timer${opts.big ? " big" : ""}${opts.compact ? " compact" : ""}" data-secs="${secs}" data-left="${secs}" data-state="${locked ? "running" : "idle"}"${locked ? " data-locked" : ""}>
+      <button type="button" class="timer-dial" ${locked ? `tabindex="-1" aria-hidden="true"` : `data-tact="toggle" aria-label="Start or pause the ${esc(label.toLowerCase())} timer"`}>
+        <svg viewBox="0 0 120 120" aria-hidden="true" focusable="false">
+          <circle class="t-track" cx="60" cy="60" r="52"/>
+          <circle class="t-prog" cx="60" cy="60" r="52" pathLength="100"/>
+        </svg>
+        <span class="t-time">${mmss(secs)}</span>
+      </button>
+      <div class="t-side">
+        <p class="t-label">${esc(label)}</p>
+        <p class="t-state" aria-live="polite">${locked ? esc(opts.note || "") : "Tap the dial to start."}</p>
+        ${opts.choices ? `<div class="t-chips">${opts.choices.map((m) => `<button type="button" data-tset="${m * 60}" aria-pressed="${m * 60 === secs}">${m} min</button>`).join("")}</div>` : ""}
+        ${locked ? "" : `<div class="t-controls"><button type="button" data-tact="toggle">Start</button><button type="button" data-tact="reset">Reset</button></div>`}
+      </div>
+    </div>`;
+  };
+
+  const paintTimer = (el, left) => {
+    const total = Number(el.dataset.secs) || 1;
+    el.dataset.left = String(left);
+    el.querySelector(".t-time").textContent = mmss(left);
+    el.querySelector(".t-prog").style.strokeDashoffset = String(100 * (1 - left / total));
+  };
+  const setTimerState = (el, state) => {
+    el.dataset.state = state;
+    if (el.hasAttribute("data-locked")) return;
+    el.querySelector(".t-state").textContent =
+      { idle: "Tap the dial to start.", running: "Running. Tap the dial to pause.", paused: "Paused.", done: "Time’s up." }[state];
+    const btn = el.querySelector(".t-controls [data-tact=toggle]");
+    if (btn) btn.textContent = { idle: "Start", running: "Pause", paused: "Resume", done: "Again" }[state];
+  };
+  const stopTicker = () => {
+    if (ticker) { clearInterval(ticker.iv); ticker = null; }
+    document.title = BASE_TITLE;
+  };
+  const wakeAudio = () => {
+    try {
+      const A = window.AudioContext || window.webkitAudioContext;
+      if (A && !audio) audio = new A();
+      if (audio && audio.state === "suspended") audio.resume();
+    } catch (e) { audio = null; }
+  };
+  const chime = () => {
+    try {
+      if (audio) {
+        const t0 = audio.currentTime;
+        [[660, 0], [880, 0.22]].forEach(([f, t]) => {
+          const o = audio.createOscillator(), g = audio.createGain();
+          o.type = "sine"; o.frequency.value = f;
+          g.gain.setValueAtTime(0.0001, t0 + t);
+          g.gain.exponentialRampToValueAtTime(0.16, t0 + t + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + t + 0.7);
+          o.connect(g); g.connect(audio.destination);
+          o.start(t0 + t); o.stop(t0 + t + 0.75);
+        });
+      }
+      if (navigator.vibrate) navigator.vibrate([90, 60, 90]);
+    } catch (e) { /* sound is optional */ }
+  };
+  const runTimer = (el, onDone) => {
+    stopTicker();
+    const end = Date.now() + Number(el.dataset.left) * 1000;
+    setTimerState(el, "running");
+    const step = () => {
+      if (!el.isConnected) { stopTicker(); return; }
+      const left = Math.max(0, (end - Date.now()) / 1000);
+      paintTimer(el, left);
+      el.classList.toggle("low", el.hasAttribute("data-locked") && left < 600);
+      document.title = `(${mmss(left)}) ${BASE_TITLE}`;
+      if (left <= 0) {
+        stopTicker();
+        setTimerState(el, "done");
+        chime();
+        if (onDone) onDone(el);
+      }
+    };
+    ticker = { el, iv: setInterval(step, 250) };
+    step();
+  };
+  // When a timer ends, gently point at the next button.
+  const nudgeNext = (el) => {
+    const main = el.closest("main");
+    const target = main && main.querySelector("[data-nudge]");
+    if (target) { target.classList.remove("nudge"); void target.offsetWidth; target.classList.add("nudge"); }
+  };
+
   /* ---------- users and progress ----------
      Users are profiles on this device. A guest's progress lives only in memory. */
   const USERS_KEY = "essayjar:users";
@@ -433,6 +529,7 @@
       : s === "whole" ? "The whole essay" : secs[s].h;
 
     const render = () => {
+      stopTicker();
       const s = steps[L.step];
       app.innerHTML = `
         ${topbar()}
@@ -468,11 +565,11 @@
           <p>Take a sheet of paper and draw the diagram without looking: metabolites, arrows, enzymes, cofactors. Then compare.</p>
           <div class="actions"><button class="btn" data-l="compare">Compare with the original</button></div>`;
         return `
-          ${L.phase === "compare" ? `<p class="callout">Correct your sketch where it differs. If it was far off, read it once more and sketch again.</p>` : `<p>Read the diagram and the story for a minute or two. Then hide them and sketch the diagram on paper.</p>`}
+          ${L.phase === "compare" ? `<p class="callout">Correct your sketch where it differs. If it was far off, read it once more and sketch again.</p>` : `<p>Read the diagram and the story for two minutes. Then hide them and sketch the diagram on paper.</p>${timerHTML(120, "Reading time")}`}
           ${drawBlock(e)}
           ${storyBlock(e)}
           <div class="actions">
-            <button class="btn${L.phase === "compare" ? " ghost" : ""}" data-l="hide">${L.phase === "compare" ? "Sketch it again" : "Hide it and sketch"}</button>
+            <button class="btn${L.phase === "compare" ? " ghost" : ""}" data-l="hide"${L.phase === "compare" ? "" : " data-nudge"}>${L.phase === "compare" ? "Sketch it again" : "Hide it and sketch"}</button>
             ${L.phase === "compare" ? `<button class="btn" data-l="next">Next: the sections</button>` : ""}
           </div>`;
       }
@@ -480,20 +577,23 @@
       if (s === "whole") return `
         <h2>The whole essay</h2>
         <p>Every section has come back at least once. Now close everything and write the full essay from the question alone, diagram first. This first full recall starts the essay’s review schedule.</p>
-        <p class="hint">If you can, take a 5 to 10 minute break first. A short gap makes this recall work harder, and that effort is what makes it stick.</p>
-        <div class="actions"><a class="btn" href="#/recall/${e.id}">Recall the whole essay</a></div>`;
+        <p class="hint">Take a 5 to 10 minute break first: stand up, get some water, don’t look at the notes. A short gap makes this recall work harder, and that effort is what makes it stick.</p>
+        ${timerHTML(300, "Break", { choices: [5, 10] })}
+        <div class="actions"><a class="btn" href="#/recall/${e.id}" data-nudge>Recall the whole essay</a></div>`;
 
       // a section
       const sec = secs[s];
       const shown = L.targets || sec.atoms;
       const passTotal = sec.atoms.filter((a) => a.tier === "pass").length;
+      const readSecs = Math.min(150, Math.max(30, Math.round(shown.length * 25 / 5) * 5));
       if (L.phase === "read") return `
         <h2>${esc(sec.h)}</h2>
         <p class="hint">${L.targets
-          ? `Read the ${plural(L.targets.length, "point")} you missed. Then hide them and type them back.`
-          : `Read these ${plural(sec.atoms.length, "point")}. Notice how they connect. Then hide them and type them back from memory.`}</p>
+          ? `Read the ${plural(L.targets.length, "point")} you missed, about ${mmss(readSecs)}. Then hide them and type them back.`
+          : `Read these ${plural(sec.atoms.length, "point")}, about ${mmss(readSecs)}. Notice how they connect. Then hide them and type them back from memory.`}</p>
+        ${timerHTML(readSecs, "Reading time", { compact: true })}
         ${atomList(shown, { noSrc: true })}
-        <div class="actions"><button class="btn" data-l="hide">Hide and type them back</button></div>`;
+        <div class="actions"><button class="btn" data-l="hide" data-nudge>Hide and type them back</button></div>`;
       if (L.phase === "hidden") return `
         <h2>${esc(sec.h)}</h2>
         <p class="hint">${L.targets
@@ -570,7 +670,7 @@
         ${guestNotice()}
         <p class="meta">${exam ? "Mock exam. No notes, no hints." : `Essay ${e.id}. Diagram first, then everything else you remember, in any order.`}</p>
         <h1 class="question">${esc(e.q)}</h1>
-        ${exam ? `<p class="clock" id="clock">${pad(C.examMinutes)}:00</p>` : ""}
+        ${exam ? timerHTML(C.examMinutes * 60, "Time left", { locked: true, big: true, note: "No pausing, like the real thing. It hands itself in at zero." }) : ""}
         <div class="skeleton" id="skeleton" hidden>
           <p>The sections, nothing more:</p>
           <ol>${e.sections.map((s) => `<li>${esc(s.h)}</li>`).join("")}</ol>
@@ -596,6 +696,7 @@
 
     const ans = document.getElementById("ans");
     ans.focus();
+    if (exam) ans.addEventListener("keydown", wakeAudio, { once: true });
     ans.addEventListener("input", () => draft.set(e.id, ans.value));
     ans.addEventListener("keydown", (ev) => {
       if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") { ev.preventDefault(); finish(); }
@@ -613,24 +714,12 @@
     });
     document.getElementById("checkBtn").addEventListener("click", () => finish());
 
-    if (exam) {
-      const end = Date.now() + C.examMinutes * 60000;
-      const clock = document.getElementById("clock");
-      const tick = () => {
-        const ms = Math.max(0, end - Date.now());
-        const m = Math.floor(ms / 60000), s = Math.floor((ms % 60000) / 1000);
-        clock.textContent = pad(m) + ":" + pad(s);
-        clock.classList.toggle("low", ms < 10 * 60000);
-        if (ms <= 0) finish();
-      };
-      tick();
-      timer = setInterval(tick, 1000);
-    }
+    if (exam) runTimer(app.querySelector(".timer"), () => finish());
 
     function finish() {
       if (st.done) return;
       st.done = true;
-      clearInterval(timer); timer = null;
+      stopTicker();
       const text = ans.value;
       draft.del(e.id);
       const T = tokenize(text);
@@ -997,6 +1086,33 @@
 
   /* ---------- global actions ---------- */
   document.addEventListener("click", (ev) => {
+    if (ev.target.closest('a[href^="#/exam/"]')) wakeAudio();
+    const tBtn = ev.target.closest("[data-tact], [data-tset]");
+    if (tBtn) {
+      const el = tBtn.closest(".timer");
+      if (!el || el.hasAttribute("data-locked")) return;
+      if (tBtn.dataset.tset) {
+        stopTicker();
+        el.dataset.secs = tBtn.dataset.tset;
+        el.querySelectorAll("[data-tset]").forEach((b) => b.setAttribute("aria-pressed", String(b === tBtn)));
+        paintTimer(el, Number(tBtn.dataset.tset));
+        setTimerState(el, "idle");
+        return;
+      }
+      if (tBtn.dataset.tact === "reset") {
+        stopTicker();
+        paintTimer(el, Number(el.dataset.secs));
+        setTimerState(el, "idle");
+        return;
+      }
+      wakeAudio();
+      if (el.dataset.state === "running") { stopTicker(); setTimerState(el, "paused"); }
+      else {
+        if (el.dataset.state === "done") paintTimer(el, Number(el.dataset.secs));
+        runTimer(el, nudgeNext);
+      }
+      return;
+    }
     const sw = ev.target.closest("[data-user]");
     if (sw) { switchTo(users.find((u) => u.id === sw.dataset.user)); location.hash = "#/"; return; }
     const del = ev.target.closest("[data-deluser]");
@@ -1046,6 +1162,7 @@
   /* ---------- router ---------- */
   const route = () => {
     clearInterval(timer); timer = null;
+    stopTicker();
     closeModal();
     app.onclick = null;
     const [view, arg] = location.hash.replace(/^#\/?/, "").split("/");
