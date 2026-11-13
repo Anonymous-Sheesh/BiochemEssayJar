@@ -72,9 +72,23 @@ button { font: inherit; color: inherit; }
 .brand {
   font: 600 1.15rem/1 var(--serif); color: var(--ink); text-decoration: none;
 }
-.topbar nav { display: flex; gap: 1.25rem; }
+.topbar nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.4rem 1.25rem; }
 .topbar nav a { color: var(--muted); text-decoration: none; font-weight: 500; }
 .topbar nav a:hover { color: var(--blue); }
+.topbar nav a.who {
+  color: var(--ink); font-weight: 600; padding: 0.2rem 0.75rem;
+  border: 1.5px solid var(--line); border-radius: 999px; max-width: 12rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar nav a.who.guest { color: var(--muted); border-style: dashed; font-weight: 500; }
+
+/* guest notice */
+.notice {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.6rem 1rem;
+  margin: 0.25rem 0 1rem; padding: 0.75rem 1rem; border-radius: var(--r-md);
+  background: var(--surface); border: 1px dashed var(--line);
+}
+.notice p { margin: 0; max-width: 44em; }
 
 /* ---------- type ---------- */
 h1, h2, h3 { margin: 0; }
@@ -310,7 +324,6 @@ mark {
 }
 
 /* ---------- settings ---------- */
-.settings label { display: block; margin: 0.6rem 0; font-weight: 500; }
 .settings input[type="date"] {
   display: block; margin-top: 0.3rem; padding: 0.55rem 0.7rem; font: inherit;
   border: 1.5px solid var(--line); border-radius: var(--r-sm); background: var(--paper); color: var(--ink);
@@ -320,6 +333,41 @@ mark {
 .saved { color: var(--blue); font-weight: 500; }
 .danger { border-left: 4px solid var(--red); }
 .danger-btn { color: var(--red) !important; border-color: var(--red) !important; }
+
+
+/* ---------- learn ---------- */
+.steps { list-style: none; display: flex; gap: 4px; padding: 0; margin: 0 0 1.25rem; max-width: 520px; }
+.steps li { flex: 1; height: 5px; border-radius: 3px; background: var(--line); }
+.steps li.done { background: var(--blue); }
+.steps li.now { background: var(--blue); opacity: 0.45; }
+.stage > h2 { font-size: 1.25rem; margin-bottom: 0.4rem; }
+.stage > p { max-width: 46em; }
+.callout { margin: 0.75rem 0; padding: 0.6rem 0.9rem; border-radius: var(--r-md); background: var(--blue-soft); max-width: 46em; }
+.callout.ok { display: inline-block; margin: 0 0.6rem 0 0; }
+.learn-check { margin-top: 0.5rem; }
+.learn .your-answer { margin: 1rem 0; }
+
+/* ---------- users ---------- */
+.user-list { list-style: none; margin: 1.5rem 0; padding: 0; border-top: 1px solid var(--line); }
+.user-list li {
+  display: grid; grid-template-columns: 1fr auto; grid-template-areas: "name actions" "stat actions";
+  gap: 0.1rem 1rem; align-items: center; padding: 0.8rem 0.25rem; border-bottom: 1px solid var(--line);
+}
+.user-list li.current .u-name::after { content: ""; display: inline-block; width: 0.55rem; height: 0.55rem; margin-left: 0.5rem; border-radius: 50%; background: var(--blue); vertical-align: middle; }
+.u-name { grid-area: name; font: 600 1.15rem/1.2 var(--serif); }
+.u-stat { grid-area: stat; color: var(--muted); font-size: 0.9rem; }
+.u-actions { grid-area: actions; display: flex; gap: 0.5rem; align-items: center; }
+.users label, .settings label { display: block; margin: 0.6rem 0; font-weight: 500; }
+.users input[type="text"], .users input:not([type]), .users input[name="name"] {
+  display: block; width: min(100%, 22rem); margin-top: 0.3rem; padding: 0.6rem 0.75rem; font: inherit;
+  border: 1.5px solid var(--line); border-radius: var(--r-sm); background: var(--paper); color: var(--ink);
+}
+.users label.check { display: flex; gap: 0.5rem; align-items: center; font-weight: 400; }
+.err { color: var(--red); font-weight: 500; }
+
+/* ---------- how ---------- */
+.how ol, .how ul { margin: 0.25rem 0 0.5rem; padding-left: 1.3rem; max-width: 46em; }
+.how li { margin: 0.35rem 0; }
 
 /* ---------- footer ---------- */
 .foot { max-width: 940px; margin: 0 auto; padding: 1.5rem 1.25rem 2.5rem; color: var(--muted); font-size: 0.88rem; }
@@ -335,6 +383,9 @@ mark {
   .atom { grid-template-columns: 1fr; gap: 0.1rem; }
   .bar { flex-direction: column; align-items: stretch; }
   .bar-actions .btn { flex: 1; }
+  .topbar { flex-direction: column; align-items: flex-start; gap: 0.6rem; }
+  .topbar nav { justify-content: flex-start; gap: 0.4rem 1rem; }
+  .user-list li { grid-template-columns: 1fr; grid-template-areas: "name" "stat" "actions"; gap: 0.3rem; }
   .answer-box { min-height: 40vh; }
 }
 
