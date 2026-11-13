@@ -3,8 +3,6 @@
   "use strict";
 
   const C = window.COURSE;
-  const KEY = "essayjar:" + C.id;
-  const DRAFT = "essayjar-draft:" + C.id + ":";
   const app = document.getElementById("app");
   const modal = document.getElementById("modal");
   let timer = null;
@@ -22,21 +20,76 @@
     return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 864e5); };
   const longDate = (s) => { const [y, m, d] = ymd(s);
     return new Date(y, m - 1, d).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }); };
+  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
   const store = {
     get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } },
     set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* storage full or blocked */ } },
-    del: (k) => { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } }
+    del: (k) => { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } },
+    keys: () => { try { return Object.keys(localStorage); } catch (e) { return []; } }
   };
+  const reduceMotion = () => window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  /* ---------- progress ---------- */
+  /* ---------- users and progress ----------
+     Users are profiles on this device. A guest's progress lives only in memory. */
+  const USERS_KEY = "essayjar:users";
+  const CUR_KEY = "essayjar:current";
+  const LEGACY_KEY = "essayjar:" + C.id;
+  const keyFor = (id) => "essayjar:" + C.id + ":u:" + id;
+  const draftPrefix = (id) => "essayjar-draft:" + C.id + ":" + id + ":";
+  const newId = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
   const fresh = () => ({ v: 1, start: today(), exam: C.examDate, att: {}, due: {} });
-  const load = () => {
-    try { const s = JSON.parse(store.get(KEY)); if (s && s.v === 1 && s.att && s.due) return s; } catch (e) { /* fall through */ }
+  const valid = (s) => !!(s && s.v === 1 && s.att && s.due && s.start && s.exam);
+  const loadState = (id) => {
+    try { const s = JSON.parse(store.get(keyFor(id))); if (valid(s)) return s; } catch (e) { /* fall through */ }
     return fresh();
   };
-  let S = load();
-  const save = () => store.set(KEY, JSON.stringify(S));
-  save();
+  const loadUsers = () => {
+    try { const u = JSON.parse(store.get(USERS_KEY)); if (Array.isArray(u)) return u.filter((x) => x && x.id && x.name); } catch (e) { /* fall through */ }
+    return [];
+  };
+
+  let users = loadUsers();
+  const saveUsers = () => store.set(USERS_KEY, JSON.stringify(users));
+
+  // Progress saved before users existed becomes a user called "Me".
+  (() => {
+    const legacy = store.get(LEGACY_KEY);
+    if (!legacy) return;
+    try {
+      if (valid(JSON.parse(legacy))) {
+        const id = newId();
+        users.push({ id, name: "Me", created: today() });
+        store.set(keyFor(id), legacy);
+        saveUsers();
+        if (!store.get(CUR_KEY)) store.set(CUR_KEY, id);
+      }
+    } catch (e) { /* ignore */ }
+    store.del(LEGACY_KEY);
+  })();
+
+  let user = users.find((u) => u.id === store.get(CUR_KEY)) || null;
+  let S = user ? loadState(user.id) : fresh();
+  const save = () => { if (user) store.set(keyFor(user.id), JSON.stringify(S)); };
+  const switchTo = (u) => {
+    user = u || null;
+    if (user) store.set(CUR_KEY, user.id); else store.del(CUR_KEY);
+    S = user ? loadState(user.id) : fresh();
+  };
+  const hasProgress = (s) => Object.keys(s.att).some((id) => s.att[id] && s.att[id].length);
+  const deleteUser = (id) => {
+    store.del(keyFor(id));
+    store.keys().filter((k) => k.startsWith(draftPrefix(id))).forEach((k) => store.del(k));
+    users = users.filter((u) => u.id !== id);
+    saveUsers();
+    if (user && user.id === id) switchTo(null);
+  };
+
+  const guestDrafts = {};
+  const draft = {
+    get: (eid) => (user ? store.get(draftPrefix(user.id) + eid) || "" : guestDrafts[eid] || ""),
+    set: (eid, v) => { if (user) store.set(draftPrefix(user.id) + eid, v); else guestDrafts[eid] = v; },
+    del: (eid) => { if (user) store.del(draftPrefix(user.id) + eid); else delete guestDrafts[eid]; }
+  };
 
   /* ---------- text matching ---------- */
   const SUP = { "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9" };
@@ -134,10 +187,12 @@
     E[e.id] = e;
   });
   const PLAN_DAYS = Math.max(...C.essays.map((e) => e.day || 1));
+  const lectureName = (l) => (C.lectures && C.lectures[l]) || l;
 
   /* ---------- scheduling ---------- */
   const atts = (id) => S.att[id] || [];
-  const cleanDays = (id) => new Set(atts(id).filter((a) => a.score >= 0.9 && !a.hint).map((a) => a.d)).size;
+  const cleanDaysIn = (s, id) => new Set((s.att[id] || []).filter((a) => a.score >= 0.9 && !a.hint).map((a) => a.d)).size;
+  const cleanDays = (id) => cleanDaysIn(S, id);
   const status = (id) => {
     const a = atts(id);
     if (!a.length) return "new";
@@ -198,16 +253,27 @@
   };
 
   /* ---------- shared pieces ---------- */
-  const topbar = (back) => `
+  const topbar = () => `
     <header class="topbar">
       <a class="brand" href="#/">Essay Jar</a>
-      <nav>${back ? `<a href="#/">Today</a>` : ""}<a href="#/settings">Settings</a></nav>
+      <nav>
+        <a href="#/">Today</a>
+        <a href="#/how">How to study</a>
+        <a href="#/settings">Settings</a>
+        <a class="who${user ? "" : " guest"}" href="#/users" title="Switch or create a user">${user ? esc(user.name) : "Guest"}</a>
+      </nav>
     </header>`;
 
   const footer = () => `
     <footer class="foot">
-      <p>Made by Ibad Siddiqui. Progress is saved in this browser only, so back it up from Settings now and then.</p>
+      <p>Made by Ibad Siddiqui. Progress is saved per user in this browser only; back it up from Settings now and then.</p>
     </footer>`;
+
+  const guestNotice = () => user ? "" : `
+    <div class="notice">
+      <p><strong>You’re studying as a guest, so nothing is saved.</strong> Create a user to keep your progress on this device.</p>
+      <a class="btn small" href="#/users">Create a user</a>
+    </div>`;
 
   const tally = (id) => {
     const n = Math.min(cleanDays(id), 3);
@@ -246,6 +312,28 @@
       </svg>`;
   };
 
+  const atomList = (atoms, opts = {}) => `
+    <ul class="atoms">
+      ${atoms.map((a) => `
+        <li class="atom tier-${a.tier}">
+          <span class="tier">${a.tier === "pass" ? "Pass" : "Boost"}</span>
+          <span class="atom-body">
+            <span class="atom-text">${esc(a.s)}</span>
+            ${opts.noSrc ? "" : `<span class="src">${esc(a.src || "")}</span>`}
+            ${a.note ? `<span class="note">${esc(a.note)}</span>` : ""}
+          </span>
+        </li>`).join("")}
+    </ul>`;
+
+  const drawBlock = (e) => `
+    <section class="block draw-first">
+      <h2>Draw this first</h2>
+      ${e.img ? `<img src="${esc(e.img)}" alt="Professor’s diagram for essay ${e.id}">` : ""}
+      <p>${esc(e.draw)}</p>
+    </section>`;
+
+  const storyBlock = (e) => e.hook ? `<section class="block story"><h2>The story</h2><p>${esc(e.hook)}</p></section>` : "";
+
   /* ---------- home ---------- */
   const viewHome = () => {
     const { reviews, fresh } = todayList();
@@ -261,22 +349,22 @@
     else if (left === 0) when = "Exam day. Skim the skeletons and trust your recall.";
     else when = "The exam date has passed. Set the next one in Settings.";
 
-    let phase;
+    let phase = "";
     if (di <= PLAN_DAYS) phase = `Day ${di} of the ${PLAN_DAYS}-day learning plan.`;
     else if (left > 0) phase = "Every essay has been introduced. From now on it’s jar draws and mock exams.";
-    else phase = "";
 
     const items = [
       ...reviews.map((e) => row(e, `<span class="tag">Review</span><a class="btn small" href="#/recall/${e.id}">Recall</a>`)),
-      ...fresh.map((e) => row(e, `<span class="tag">New</span><a class="btn small ghost" href="#/study/${e.id}">Study</a><a class="btn small" href="#/recall/${e.id}">Recall</a>`))
+      ...fresh.map((e) => row(e, `<span class="tag">New</span><a class="btn small" href="#/learn/${e.id}">Learn</a>`))
     ];
 
     const groups = {};
     C.essays.forEach((e) => { (groups[e.lecture] = groups[e.lecture] || []).push(e); });
 
     app.innerHTML = `
-      ${topbar(false)}
+      ${topbar()}
       <main class="wrap">
+        ${guestNotice()}
         <section class="hero">
           <div class="hero-text">
             <h1>${esc(C.title)}</h1>
@@ -294,77 +382,193 @@
         <section class="panel today">
           <h2>Today</h2>
           ${items.length
-            ? `<p class="hint">New essays: study them, then close the notes and recall. Reviews: recall straight away, no peeking.</p><ul class="rows">${items.join("")}</ul>`
+            ? `<p class="hint">New essays: press Learn and follow the steps. Reviews: recall straight from the question, no peeking first.</p><ul class="rows">${items.join("")}</ul>`
             : `<p class="empty">Nothing is due today. Draw from the jar, or run a mock exam.</p>`}
         </section>
 
         <section class="all">
           <h2>All ${C.essays.length} essays</h2>
           ${Object.keys(groups).map((l) => `
-            <h3>${esc((C.lectures && C.lectures[l]) || l)}</h3>
+            <h3>${esc(lectureName(l))}</h3>
             <ul class="rows">${groups[l].map((e) => row(e)).join("")}</ul>`).join("")}
         </section>
       </main>
       ${footer()}`;
   };
 
-  /* ---------- study ---------- */
+  /* ---------- notes (study page) ---------- */
   const viewStudy = (e) => {
     const st = status(e.id);
     const plan = e.day ? ` Planned for day ${e.day}.` : "";
     app.innerHTML = `
-      ${topbar(true)}
+      ${topbar()}
       <main class="wrap study">
-        <p class="meta">Essay ${e.id}, from ${esc((C.lectures && C.lectures[e.lecture]) || e.lecture)}.${plan} Status: ${LABEL[st]}.</p>
+        <p class="meta">Essay ${e.id}, from ${esc(lectureName(e.lecture))}.${plan} Status: ${LABEL[st]}.</p>
         <h1 class="question">${esc(e.q)}</h1>
         <div class="actions">
+          <a class="btn" href="#/learn/${e.id}">Learn it step by step</a>
+          <a class="btn ghost" href="#/recall/${e.id}">Recall it</a>
           <button class="btn ghost" data-act="cover" aria-pressed="false">Cover the answers</button>
-          <a class="btn" href="#/recall/${e.id}">Close the notes and recall</a>
         </div>
-
-        <section class="block draw-first">
-          <h2>Draw this first</h2>
-          ${e.img ? `<img src="${esc(e.img)}" alt="Professor’s diagram for essay ${e.id}">` : ""}
-          <p>${esc(e.draw)}</p>
-        </section>
-
-        ${e.hook ? `<section class="block story"><h2>The story</h2><p>${esc(e.hook)}</p></section>` : ""}
-
+        ${drawBlock(e)}
+        ${storyBlock(e)}
         <section class="points">
           <h2 class="points-title">What the essay must contain</h2>
-          <p class="hint">Pass points are what you need to pass. Boost points make the answer strong. Tap a covered line to reveal it.</p>
-          ${e.sections.map((s) => `
-            <div class="sec">
-              <h3>${esc(s.h)}</h3>
-              <ul class="atoms">
-                ${s.atoms.map((a) => `
-                  <li class="atom tier-${a.tier}">
-                    <span class="tier">${a.tier === "pass" ? "Pass" : "Boost"}</span>
-                    <span class="atom-body">
-                      <span class="atom-text" tabindex="-1">${esc(a.s)}</span>
-                      <span class="src">${esc(a.src || "")}</span>
-                      ${a.note ? `<span class="note">${esc(a.note)}</span>` : ""}
-                    </span>
-                  </li>`).join("")}
-              </ul>
-            </div>`).join("")}
+          <p class="hint">Pass points are what you need to pass. Boost points make the answer strong. When covered, tap a line to reveal it.</p>
+          ${e.sections.map((s) => `<div class="sec"><h3>${esc(s.h)}</h3>${atomList(s.atoms)}</div>`).join("")}
         </section>
-
         ${e.links ? `<p class="links">Connections: ${esc(e.links)}</p>` : ""}
       </main>
       ${footer()}`;
+  };
+
+  /* ---------- learn: guided first session for a new essay ----------
+     Warm-up guess → diagram (read, hide, sketch, compare) → each section
+     (read, hide, type back, re-read only misses, repeat) → whole essay recall. */
+  const viewLearn = (e) => {
+    const secs = e.sections;
+    const steps = ["warm", "draw", ...secs.map((_, i) => i), "whole"];
+    const L = { step: 0, phase: "read", targets: null, recalled: {}, result: null };
+    const stepName = (s) => s === "warm" ? "Warm-up guess" : s === "draw" ? "The diagram"
+      : s === "whole" ? "The whole essay" : secs[s].h;
+
+    const render = () => {
+      const s = steps[L.step];
+      app.innerHTML = `
+        ${topbar()}
+        <main class="wrap learn">
+          ${guestNotice()}
+          <p class="meta">Learning essay ${e.id}. Step ${L.step + 1} of ${steps.length}: ${esc(stepName(s))}.</p>
+          <ol class="steps" aria-hidden="true">${steps.map((_, i) => `<li class="${i < L.step ? "done" : i === L.step ? "now" : ""}"></li>`).join("")}</ol>
+          <h1 class="question">${esc(e.q)}</h1>
+          <section class="stage">${stage(s)}</section>
+        </main>`;
+      const box = app.querySelector(".stage textarea");
+      if (box) box.focus();
+      if (box) box.addEventListener("keydown", (ev) => {
+        if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
+          ev.preventDefault();
+          const b = app.querySelector("[data-l=check], [data-l=next]");
+          if (b) b.click();
+        }
+      });
+    };
+
+    const stage = (s) => {
+      if (s === "warm") return `
+        <h2>Warm-up guess</h2>
+        <p>Before you read anything, type whatever you already know or can guess about this question. Wrong guesses are fine: trying first makes the reading stick better.</p>
+        <label class="sr" for="warm">Your guess</label>
+        <textarea id="warm" class="answer-box short" spellcheck="false" autocomplete="off" placeholder="Anything that comes to mind…"></textarea>
+        <div class="actions"><button class="btn" data-l="next">Continue</button><button class="btn ghost" data-l="next">Skip</button></div>`;
+
+      if (s === "draw") {
+        if (L.phase === "hidden") return `
+          <h2>Sketch it from memory</h2>
+          <p>Take a sheet of paper and draw the diagram without looking: metabolites, arrows, enzymes, cofactors. Then compare.</p>
+          <div class="actions"><button class="btn" data-l="compare">Compare with the original</button></div>`;
+        return `
+          ${L.phase === "compare" ? `<p class="callout">Correct your sketch where it differs. If it was far off, read it once more and sketch again.</p>` : `<p>Read the diagram and the story for a minute or two. Then hide them and sketch the diagram on paper.</p>`}
+          ${drawBlock(e)}
+          ${storyBlock(e)}
+          <div class="actions">
+            <button class="btn${L.phase === "compare" ? " ghost" : ""}" data-l="hide">${L.phase === "compare" ? "Sketch it again" : "Hide it and sketch"}</button>
+            ${L.phase === "compare" ? `<button class="btn" data-l="next">Next: the sections</button>` : ""}
+          </div>`;
+      }
+
+      if (s === "whole") return `
+        <h2>The whole essay</h2>
+        <p>Every section has come back at least once. Now close everything and write the full essay from the question alone, diagram first. This first full recall starts the essay’s review schedule.</p>
+        <p class="hint">If you can, take a 5 to 10 minute break first. A short gap makes this recall work harder, and that effort is what makes it stick.</p>
+        <div class="actions"><a class="btn" href="#/recall/${e.id}">Recall the whole essay</a></div>`;
+
+      // a section
+      const sec = secs[s];
+      const shown = L.targets || sec.atoms;
+      const passTotal = sec.atoms.filter((a) => a.tier === "pass").length;
+      if (L.phase === "read") return `
+        <h2>${esc(sec.h)}</h2>
+        <p class="hint">${L.targets
+          ? `Read the ${plural(L.targets.length, "point")} you missed. Then hide them and type them back.`
+          : `Read these ${plural(sec.atoms.length, "point")}. Notice how they connect. Then hide them and type them back from memory.`}</p>
+        ${atomList(shown, { noSrc: true })}
+        <div class="actions"><button class="btn" data-l="hide">Hide and type them back</button></div>`;
+      if (L.phase === "hidden") return `
+        <h2>${esc(sec.h)}</h2>
+        <p class="hint">${L.targets
+          ? `Type the ${plural(L.targets.length, "point")} you missed. Your own words, any order.`
+          : `Type everything from this section: ${plural(passTotal, "pass point")}${sec.atoms.length > passTotal ? ` and ${plural(sec.atoms.length - passTotal, "boost point")}` : ""}. Your own words, any order.`}</p>
+        <label class="sr" for="secBox">Your recall</label>
+        <textarea id="secBox" class="answer-box short" spellcheck="false" autocomplete="off"></textarea>
+        <div class="actions"><button class="btn" data-l="check">Check</button></div>`;
+      // phase "checked"
+      const missed = sec.atoms.filter((a) => a.tier === "pass" && !L.recalled[a.id]);
+      const R = L.result;
+      return `
+        <h2>${esc(sec.h)}</h2>
+        <p class="score"><strong>${passTotal - missed.length} of ${passTotal}</strong> pass points recalled in this section.</p>
+        ${R.text.trim() ? `<div class="block your-answer"><div class="answer-view">${highlight(R.text, R.T, R.hitSet)}</div></div>` : ""}
+        <p class="hint">Tap a line if the check missed something you did write.</p>
+        <ul class="atoms learn-check">
+          ${sec.atoms.map((a) => {
+            const got = !!L.recalled[a.id];
+            const mark = got ? "✓" : a.tier === "pass" ? "⊗" : "○";
+            return `<li><button class="check-row ${got ? "got" : "missed"} tier-${a.tier}" data-la="${a.id}" aria-pressed="${got}">
+              <span class="mark" aria-hidden="true">${mark}</span>
+              <span class="atom-body"><span class="atom-text"><span class="hl">${esc(a.s)}</span></span>
+              <span class="src">${a.tier === "pass" ? "Pass" : "Boost"}</span></span></button></li>`;
+          }).join("")}
+        </ul>
+        <div class="actions">
+          ${missed.length
+            ? `<button class="btn" data-l="reread">Re-read the ${plural(missed.length, "missed point")}</button><button class="btn ghost" data-l="next">Move on anyway</button>`
+            : `<p class="callout ok">Section done.</p><button class="btn" data-l="next">${L.step + 1 < steps.length - 1 ? "Next section" : "Next: the whole essay"}</button>`}
+        </div>`;
+    };
+
+    app.onclick = (ev) => {
+      const b = ev.target.closest("[data-l], [data-la]");
+      if (!b || !app.querySelector(".learn")) return;
+      if (b.dataset.la) {
+        L.recalled[b.dataset.la] = !L.recalled[b.dataset.la];
+        return render();
+      }
+      const act = b.dataset.l;
+      const s = steps[L.step];
+      if (act === "next") { L.step = Math.min(L.step + 1, steps.length - 1); L.phase = "read"; L.targets = null; L.result = null; window.scrollTo(0, 0); }
+      else if (act === "hide") L.phase = "hidden";
+      else if (act === "compare") L.phase = "compare";
+      else if (act === "reread") {
+        L.targets = secs[s].atoms.filter((a) => a.tier === "pass" && !L.recalled[a.id]);
+        L.phase = "read";
+      }
+      else if (act === "check") {
+        const text = document.getElementById("secBox").value;
+        const T = tokenize(text), hitSet = new Set();
+        (L.targets || secs[s].atoms).forEach((a) => {
+          const hits = checkAtom(T, a);
+          if (hits) { L.recalled[a.id] = true; hits.forEach((h) => hitSet.add(h)); }
+        });
+        L.result = { text, T, hitSet };
+        L.phase = "checked";
+      }
+      render();
+    };
+    render();
   };
 
   /* ---------- recall and exam ---------- */
   const viewRecall = (e, mode) => {
     const exam = mode === "exam";
     const st = { hint: false, conf: null, done: false };
-    const draft = store.get(DRAFT + e.id) || "";
+    const saved = draft.get(e.id);
 
     app.innerHTML = `
-      ${topbar(true)}
+      ${topbar()}
       <main class="wrap recall">
-        <p class="meta">${exam ? "Mock exam. No notes, no hints." : `Essay ${e.id}. Type everything you remember, in any order.`}</p>
+        ${guestNotice()}
+        <p class="meta">${exam ? "Mock exam. No notes, no hints." : `Essay ${e.id}. Diagram first, then everything else you remember, in any order.`}</p>
         <h1 class="question">${esc(e.q)}</h1>
         ${exam ? `<p class="clock" id="clock">${pad(C.examMinutes)}:00</p>` : ""}
         <div class="skeleton" id="skeleton" hidden>
@@ -373,7 +577,7 @@
         </div>
         <label class="sr" for="ans">Your answer</label>
         <textarea id="ans" class="answer-box" spellcheck="false" autocomplete="off"
-          placeholder="Start with what you would draw, then write everything else.">${esc(draft)}</textarea>
+          placeholder="Sketch the diagram on paper first, then type everything you remember.">${esc(saved)}</textarea>
         <div class="bar">
           <div class="conf" role="group" aria-label="How sure do you feel?">
             <span class="conf-q">How sure do you feel?</span>
@@ -392,7 +596,7 @@
 
     const ans = document.getElementById("ans");
     ans.focus();
-    ans.addEventListener("input", () => store.set(DRAFT + e.id, ans.value));
+    ans.addEventListener("input", () => draft.set(e.id, ans.value));
     ans.addEventListener("keydown", (ev) => {
       if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") { ev.preventDefault(); finish(); }
     });
@@ -428,7 +632,7 @@
       st.done = true;
       clearInterval(timer); timer = null;
       const text = ans.value;
-      store.del(DRAFT + e.id);
+      draft.del(e.id);
       const T = tokenize(text);
       const got = {}, hitSet = new Set();
       e.atoms.forEach((a) => {
@@ -442,12 +646,11 @@
       R.idx = list.length - 1;
       updateScore(e, R);
       if (!missedPass(e, R).length) R.stage = "review";
-      ans.readOnly = true;
+      ans.hidden = true;
       app.querySelector(".bar").hidden = true;
       app.querySelector(".kbd-hint").hidden = true;
-      ans.hidden = true;
       renderResult(e, R, st);
-      document.getElementById("result").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+      document.getElementById("result").scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth" });
     }
   };
 
@@ -472,12 +675,13 @@
     else if (st.conf === 0 && rec.score >= 0.7) lines.push(`You felt blank and still got ${pct}%. You know more than you think.`);
     else if (rec.score >= 0.9) lines.push("Clean recall.");
     else if (rec.score >= 0.7) lines.push("Close. Fix the gaps below.");
-    else lines.push("Not there yet. Study it once more, then recall it again tomorrow.");
+    else lines.push("Not there yet. Read only the lines you missed, then it comes back tomorrow.");
     if (rec.hint) lines.push("You used the skeleton, so this doesn’t count as a clean recall.");
     const cd = cleanDays(e.id);
     if (status(e.id) === "ready") lines.push("Three clean recalls on separate days: this essay is exam-ready.");
     else if (rec.score >= 0.9 && !rec.hint) lines.push(`${cd} of 3 clean recalls on separate days.`);
     if (S.due[e.id]) lines.push(`Next review: ${longDate(S.due[e.id])}.`);
+    if (!user) lines.push("You’re a guest, so this result disappears when you close the page.");
     return lines.join(" ");
   };
 
@@ -495,7 +699,7 @@
     const retry = R.stage === "retry" ? `
       <section class="block retry">
         <h2>Second go, before you look</h2>
-        <p>You missed ${missed.length} pass point${missed.length === 1 ? "" : "s"}. Where they were: ${esc(secList)}. Type whatever comes back now.</p>
+        <p>You missed ${plural(missed.length, "pass point")}. Where they were: ${esc(secList)}. Type whatever comes back now.</p>
         <label class="sr" for="retryBox">Second attempt</label>
         <textarea id="retryBox" class="answer-box short" spellcheck="false" autocomplete="off"></textarea>
         <div class="actions">
@@ -508,8 +712,8 @@
     const checklist = R.stage === "review" ? `
       <section class="checklist">
         <h2>Checklist</h2>
-        <p class="hint">Ticked automatically from your words. Tap a line to correct it; the score updates.${recovered ? ` ${recovered} point${recovered === 1 ? "" : "s"} came back on the second go — good, but they don’t count yet.` : ""}</p>
-        ${e.sections.map((s, si) => `
+        <p class="hint">Ticked automatically from your words. Tap a line to correct it; the score updates. Read the missed lines carefully — that’s your study for this essay today.${recovered ? ` ${plural(recovered, "point")} came back on the second go: good, but they don’t count yet.` : ""}</p>
+        ${e.sections.map((s) => `
           <div class="sec">
             <h3>${esc(s.h)}</h3>
             <ul class="atoms">
@@ -518,7 +722,7 @@
                 const mark = state === "got" ? "✓" : state === "recovered" ? "↺" : a.tier === "pass" ? "⊗" : "○";
                 return `
                 <li>
-                  <button class="check-row ${state} tier-${a.tier}" data-atom="${si}.${s.atoms.indexOf(a)}" aria-pressed="${state === "got"}">
+                  <button class="check-row ${state} tier-${a.tier}" data-atom="${a.id}" aria-pressed="${state === "got"}">
                     <span class="mark" aria-hidden="true">${mark}</span>
                     <span class="atom-body">
                       <span class="atom-text"><span class="hl">${esc(a.s)}</span></span>
@@ -543,7 +747,7 @@
       ${retry}
       ${checklist}
       <div class="actions end">
-        <a class="btn ghost" href="#/study/${e.id}">Study this essay</a>
+        <a class="btn ghost" href="#/study/${e.id}">Open the notes</a>
         <button class="btn ghost" data-act="draw">Draw another</button>
         <a class="btn" href="#/">Back to today</a>
       </div>`;
@@ -562,10 +766,9 @@
       renderResult(e, R, st);
     }));
     box.querySelectorAll("[data-atom]").forEach((btn) => btn.addEventListener("click", () => {
-      const [si, ai] = btn.dataset.atom.split(".").map(Number);
-      const a = e.sections[si].atoms[ai];
-      R.got[a.id] = !R.got[a.id];
-      if (R.got[a.id]) delete R.recovered[a.id];
+      const id = btn.dataset.atom;
+      R.got[id] = !R.got[id];
+      if (R.got[id]) delete R.recovered[id];
       updateScore(e, R);
       const y = window.scrollY;
       renderResult(e, R, st);
@@ -576,22 +779,143 @@
   /* ---------- exam start ---------- */
   const viewExamStart = () => {
     app.innerHTML = `
-      ${topbar(true)}
+      ${topbar()}
       <main class="wrap narrow">
+        ${guestNotice()}
         <h1 class="page-title">Mock exam</h1>
         <p class="lede">One essay from all ${C.essays.length}, every one equally likely, just like the box. ${C.examMinutes} minutes on the clock, no notes and no hints. When time runs out it hands itself in.</p>
-        <p class="hint">Do one of these every few days once all essays are introduced, and do at least one on paper to feel your handwriting speed.</p>
+        <p class="hint">Do one every two or three days once all essays are introduced. Do at least one on paper to feel your handwriting speed.</p>
         <div class="actions"><button class="btn" data-act="exam-draw">Draw my question</button></div>
       </main>
       ${footer()}`;
   };
 
+  /* ---------- how to study ---------- */
+  const viewHow = () => {
+    app.innerHTML = `
+      ${topbar()}
+      <main class="wrap narrow how">
+        <h1 class="page-title">How to study with Essay Jar</h1>
+        <p class="lede">It isn’t rereading and it isn’t rote memorising. You learn each essay by pulling it out of your memory, again and again, spread over days, until you can write it from the question alone.</p>
+
+        <section class="block">
+          <h2>A new essay: press Learn</h2>
+          <ol>
+            <li><strong>Warm-up guess.</strong> Type what you know before reading. Trying first makes the reading stick.</li>
+            <li><strong>The diagram.</strong> Read it, hide it, sketch it on paper, compare, fix.</li>
+            <li><strong>Section by section.</strong> Read a few points, hide them, type them back. Re-read only what you missed and type those again, until every pass point has come back once.</li>
+            <li><strong>The whole essay.</strong> After a short break, from the question alone. This starts its review schedule.</li>
+          </ol>
+          <p class="hint">About 25 to 40 minutes per essay. Two new essays a day for the first ten days.</p>
+        </section>
+
+        <section class="block">
+          <h2>A review: press Recall</h2>
+          <ol>
+            <li><strong>Question only.</strong> Say how sure you feel, sketch the diagram on paper, type everything.</li>
+            <li><strong>Second go.</strong> You’re told which sections had gaps. Try once more before looking.</li>
+            <li><strong>Checklist.</strong> Read the lines you missed, not the whole essay.</li>
+          </ol>
+          <p>The app brings each essay back after one to six days depending on how it went. Three clean recalls on separate days and it’s exam-ready.</p>
+        </section>
+
+        <section class="block">
+          <h2>After day ten</h2>
+          <p>Draw from the jar every day (it favours your weak essays) and do a mock exam every two or three days.</p>
+        </section>
+
+        <section class="block">
+          <h2>Why it works</h2>
+          <ul>
+            <li><strong>Retrieval practice.</strong> Recalling beats rereading for long-term memory, and free recall is exactly what an essay exam asks for.</li>
+            <li><strong>Spacing.</strong> Short sessions spread over days beat one long session, so reviews are scheduled, not crammed.</li>
+            <li><strong>Relearning to criterion.</strong> Every point has to come back at least once, then on three separate days.</li>
+            <li><strong>The question is the cue.</strong> You always start from the exact exam wording, so that wording triggers the essay on the day.</li>
+            <li><strong>Feedback and a second go.</strong> Finding the gap yourself, then trying again, fixes it better than just reading the answer.</li>
+            <li><strong>Pictures and stories.</strong> The diagram and the story give each fact a hook.</li>
+            <li><strong>Honest confidence.</strong> Rating how sure you feel shows which essays only feel familiar.</li>
+          </ul>
+        </section>
+
+        <section class="block">
+          <h2>Rules that make it work</h2>
+          <ul>
+            <li>Recall before you read. Opening the notes first throws away most of the benefit.</li>
+            <li>Struggle a little before checking. The effort is what makes it stick.</li>
+            <li>Don’t use the skeleton hint unless you’re completely stuck.</li>
+            <li>Sleep. Memory is consolidated overnight, so late-night cramming backfires.</li>
+          </ul>
+        </section>
+      </main>
+      ${footer()}`;
+  };
+
+  /* ---------- users ---------- */
+  const viewUsers = () => {
+    const keep = !user && hasProgress(S);
+    const statLine = (s) => {
+      const started = Object.keys(s.att).filter((id) => s.att[id] && s.att[id].length);
+      const ready = started.filter((id) => cleanDaysIn(s, id) >= 3).length;
+      return started.length ? `${started.length} of ${C.essays.length} started, ${ready} exam-ready` : "No progress yet";
+    };
+    app.innerHTML = `
+      ${topbar()}
+      <main class="wrap narrow users">
+        <h1 class="page-title">Who’s studying?</h1>
+        <p class="lede">Each user keeps their own progress, exam date and plan on this device. As a guest nothing is saved.</p>
+
+        ${users.length ? `
+        <ul class="user-list">
+          ${users.map((u) => `
+            <li class="${user && user.id === u.id ? "current" : ""}">
+              <span class="u-name">${esc(u.name)}</span>
+              <span class="u-stat">${esc(statLine(user && user.id === u.id ? S : loadState(u.id)))}</span>
+              <span class="u-actions">
+                ${user && user.id === u.id ? `<span class="tag">Current</span>` : `<button class="btn small" data-user="${esc(u.id)}">Switch</button>`}
+                <button class="btn small ghost danger-btn" data-deluser="${esc(u.id)}">Delete</button>
+              </span>
+            </li>`).join("")}
+        </ul>` : ""}
+
+        <form id="newUser" class="block" autocomplete="off">
+          <h2>Create a user</h2>
+          <label>Name <input name="name" maxlength="30" required placeholder="Your name"></label>
+          ${keep ? `<label class="check"><input type="checkbox" name="keep" checked> Keep what I just did as a guest</label>` : ""}
+          <p class="err" id="userErr" hidden></p>
+          <button class="btn" type="submit">Create and switch</button>
+        </form>
+
+        ${user ? `<p><button class="btn ghost" data-act="guest">Continue as guest</button></p>` : `<p class="hint">You’re currently a guest.</p>`}
+        <p class="hint">Users live in this browser only. On another phone or laptop, create the user there and move progress with Settings → Export and Import.</p>
+      </main>
+      ${footer()}`;
+
+    document.getElementById("newUser").addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const f = new FormData(ev.target);
+      const name = String(f.get("name") || "").trim().replace(/\s+/g, " ");
+      const err = document.getElementById("userErr");
+      if (!name) { err.textContent = "Type a name first."; err.hidden = false; return; }
+      if (users.some((u) => u.name.toLowerCase() === name.toLowerCase())) {
+        err.textContent = "That name is already a user on this device. Pick another or switch to it."; err.hidden = false; return;
+      }
+      const carry = keep && f.get("keep") ? S : null;
+      const u = { id: newId(), name, created: today() };
+      users.push(u); saveUsers();
+      if (carry) store.set(keyFor(u.id), JSON.stringify(carry));
+      switchTo(u);
+      if (!carry) save();
+      location.hash = "#/";
+    });
+  };
+
   /* ---------- settings ---------- */
   const viewSettings = () => {
     app.innerHTML = `
-      ${topbar(true)}
+      ${topbar()}
       <main class="wrap narrow settings">
         <h1 class="page-title">Settings</h1>
+        <p class="lede">${user ? `For ${esc(user.name)}.` : "You’re a guest: changes last until you close the page."} <a href="#/users">${user ? "Switch user" : "Create a user"}</a></p>
         <form id="dates" class="block">
           <h2>Dates</h2>
           <label>Exam date <input type="date" name="exam" value="${esc(S.exam)}" required></label>
@@ -601,19 +925,21 @@
           <p class="saved" id="saved" hidden>Dates saved.</p>
         </form>
         <section class="block">
-          <h2>Back up your progress</h2>
-          <p>Progress lives in this browser. Export it to move between laptop and phone, or as a backup.</p>
+          <h2>Back up or move your progress</h2>
+          ${user ? `
+          <p>Export to keep a backup or to move this user to another device; import there after creating the user.</p>
           <div class="actions">
             <button class="btn ghost" data-act="export">Export progress</button>
             <label class="btn ghost file">Import progress<input type="file" accept="application/json,.json" id="importFile"></label>
           </div>
-          <p class="saved" id="importMsg" hidden></p>
+          <p class="saved" id="importMsg" hidden></p>` : `<p>Create a user first; guests have nothing saved to export.</p>`}
         </section>
+        ${user ? `
         <section class="block danger">
           <h2>Start over</h2>
-          <p>Deletes every attempt and schedule on this device.</p>
+          <p>Deletes every attempt and schedule for ${esc(user.name)}. The user stays.</p>
           <button class="btn ghost danger-btn" data-act="reset">Delete my progress</button>
-        </section>
+        </section>` : ""}
       </main>
       ${footer()}`;
 
@@ -625,7 +951,8 @@
       save();
       document.getElementById("saved").hidden = false;
     });
-    document.getElementById("importFile").addEventListener("change", (ev) => {
+    const imp = document.getElementById("importFile");
+    if (imp) imp.addEventListener("change", (ev) => {
       const file = ev.target.files[0];
       const msg = document.getElementById("importMsg");
       if (!file) return;
@@ -633,9 +960,9 @@
       reader.onload = () => {
         try {
           const data = JSON.parse(reader.result);
-          if (!data || data.v !== 1 || !data.att || !data.due) throw new Error("bad");
+          if (!valid(data)) throw new Error("bad");
           S = data; save();
-          msg.textContent = "Progress imported.";
+          msg.textContent = `Progress imported into ${user.name}.`;
         } catch (err) {
           msg.textContent = "That file isn’t an Essay Jar progress file. Nothing was changed.";
         }
@@ -670,12 +997,21 @@
 
   /* ---------- global actions ---------- */
   document.addEventListener("click", (ev) => {
+    const sw = ev.target.closest("[data-user]");
+    if (sw) { switchTo(users.find((u) => u.id === sw.dataset.user)); location.hash = "#/"; return; }
+    const del = ev.target.closest("[data-deluser]");
+    if (del) {
+      const u = users.find((x) => x.id === del.dataset.deluser);
+      if (u && confirm(`Delete ${u.name} and all of their progress on this device?`)) { deleteUser(u.id); route(); }
+      return;
+    }
     const el = ev.target.closest("[data-act]");
     if (!el) return;
     const act = el.dataset.act;
     if (act === "draw") { closeModal(); showSlip(draw(false), false); }
     else if (act === "exam-draw") showSlip(draw(true), true);
     else if (act === "close") closeModal();
+    else if (act === "guest") { switchTo(null); location.hash = "#/"; }
     else if (act === "cover") {
       const on = el.getAttribute("aria-pressed") !== "true";
       el.setAttribute("aria-pressed", String(on));
@@ -683,24 +1019,24 @@
       document.querySelector(".points").classList.toggle("covered", on);
       document.querySelectorAll(".atom-text").forEach((t) => t.classList.remove("peek"));
     }
-    else if (act === "export") {
+    else if (act === "export" && user) {
       const blob = new Blob([JSON.stringify(S, null, 2)], { type: "application/json" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `essay-jar-progress-${today()}.json`;
+      a.download = `essay-jar-${user.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${today()}.json`;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     }
-    else if (act === "reset") {
-      if (confirm("Delete every attempt and schedule on this device?")) {
+    else if (act === "reset" && user) {
+      if (confirm(`Delete every attempt and schedule for ${user.name}?`)) {
         S = fresh(); save();
-        C.essays.forEach((e) => store.del(DRAFT + e.id));
+        store.keys().filter((k) => k.startsWith(draftPrefix(user.id))).forEach((k) => store.del(k));
         location.hash = "#/";
         route();
       }
     }
   });
-  // Reveal one covered line at a time on the study page.
+  // Reveal one covered line at a time on the notes page.
   document.addEventListener("click", (ev) => {
     const t = ev.target.closest(".covered .atom");
     if (t) t.querySelector(".atom-text").classList.add("peek");
@@ -711,13 +1047,17 @@
   const route = () => {
     clearInterval(timer); timer = null;
     closeModal();
+    app.onclick = null;
     const [view, arg] = location.hash.replace(/^#\/?/, "").split("/");
     const e = E[Number(arg)];
     window.scrollTo(0, 0);
     if (view === "study" && e) return viewStudy(e);
+    if (view === "learn" && e) return viewLearn(e);
     if (view === "recall" && e) return viewRecall(e, "practice");
     if (view === "exam" && e) return viewRecall(e, "exam");
     if (view === "exam") return viewExamStart();
+    if (view === "how") return viewHow();
+    if (view === "users") return viewUsers();
     if (view === "settings") return viewSettings();
     viewHome();
   };
