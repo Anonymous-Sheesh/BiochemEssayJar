@@ -1,5 +1,5 @@
 /*
-  Colloquium 5 – N-compounds. Content pack for Essay Jar.
+  Colloquium (N-compounds). Content pack for Essay Jar.
 
   HOW TO EDIT
   - Each essay has sections; each section has atoms (the points that must be in the essay).
@@ -22,7 +22,7 @@
 
   window.COURSE = {
     id: "c5",
-    title: "Colloquium 5",
+    title: "Colloquium",
     subtitle: "Biochemistry: nitrogen compounds",
     examDate: "2026-11-30",
     examMinutes: 90,
