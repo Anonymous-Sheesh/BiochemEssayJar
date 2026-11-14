@@ -285,6 +285,334 @@
   const PLAN_DAYS = Math.max(...C.essays.map((e) => e.day || 1));
   const lectureName = (l) => (C.lectures && C.lectures[l]) || l;
 
+  /* ---------- EssayType: monkeytype-style typing rounds ----------
+     Copy round (every word passes through your head), then gaps (key terms
+     hidden: cued recall), then first letters only (vanishing cues). */
+  const TYPE_MAP = {
+    "→": " -> ", "⇌": " <-> ", "⇄": " <-> ", "↑": " high ", "↓": " low ", "⊗": " x ", "⊖": " (-) ", "⊕": " (+) ",
+    "–": "-", "—": " - ", "−": "-", "’": "'", "‘": "'", "′": "'", "“": "\"", "”": "\"", "…": "...", "×": "x",
+    "≈": "~", "•": " ", "µ": "u", "α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "ε": "epsilon", "⁺": "+", "⁻": "-"
+  };
+  const toTypeable = (s) => String(s || "")
+    .replace(/[₀-₉]/g, (c) => String(c.charCodeAt(0) - 0x2080))
+    .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]/g, (c) => SUP[c])
+    .replace(/[→⇌⇄↑↓⊗⊖⊕–—−’‘′“”…×≈•µαβγδε⁺⁻]/g, (c) => TYPE_MAP[c])
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^\x20-\x7E]/g, "");
+  const typeWords = (text) => toTypeable(text).split(/\s+/).map((w) => {
+    if (/[a-z0-9]/i.test(w)) return w.replace(/^[(\[{"']+/, "").replace(/[)\]}"',.;:!?]+$/, "");
+    if (w === "(+)" || w === "(-)") return w;
+    return w.replace(/[()\[\]{}"',.;:!?]/g, "");
+  }).filter((w) => w && !/^-+$/.test(w));
+
+  const ET_STOP = new Set(["not", "all", "rest", "other", "stored", "before", "low", "high", "the", "and", "with",
+    "from", "into", "dark", "night", "trace", "linked", "connect", "coupled", "cross", "balance", "reciprocal", "drug",
+    "type", "diet", "active", "black", "white", "pale", "clay", "mouse", "kidney", "renal", "urine", "feces", "faeces", "stool"]);
+  const keyTokens = (atoms) => {
+    const set = new Set();
+    atoms.forEach((a) => a.groups.forEach((g) => g.forEach((alt) => alt.forEach((t) => {
+      if ((t.length >= 3 || /\d/.test(t)) && !ET_STOP.has(t)) set.add(t);
+    }))));
+    return [...set];
+  };
+  const isKeyWord = (w, keys) => {
+    if (/^(I|II|III|IV|V|VI)$/.test(w)) return true;
+    const toks = clean(w).split(" ").filter(Boolean);
+    return toks.some((t) => /\d/.test(t) || keys.some((k) => (k.length <= 3 ? t === k : wordMatch(t, k))));
+  };
+  const ET_PLAIN = new Set(["through", "because", "everything", "everyone", "another", "between", "without", "together",
+    "normally", "contains", "usually", "therefore", "important", "nothing", "someone", "whether", "anything", "himself", "herself", "neither", "either"]);
+  // Key words for the gaps round; passages with few key terms are topped up with their longest words.
+  const gapFlags = (words, keys) => {
+    const flags = words.map((w) => isKeyWord(w, keys));
+    const want = Math.ceil(words.length * 0.2);
+    let have = flags.filter(Boolean).length;
+    if (have < want) {
+      words.map((w, i) => ({ i, n: w.replace(/[^a-z]/gi, "").length, w: w.toLowerCase() }))
+        .filter((x) => !flags[x.i] && x.n >= 7 && !ET_PLAIN.has(x.w))
+        .sort((a, b) => b.n - a.n)
+        .forEach((x) => { if (have < want) { flags[x.i] = true; have++; } });
+      // hide every repeat of a topped-up word, so the same word isn't shown in one place and hidden in another
+      const picked = new Set(words.filter((_, i) => flags[i]).map((w) => w.toLowerCase()));
+      words.forEach((w, i) => { if (picked.has(w.toLowerCase())) flags[i] = true; });
+    }
+    return flags;
+  };
+  // Which letters of each word are hidden in a round.
+  const maskFor = (words, round, keys) => {
+    const gaps = round === "gaps" ? gapFlags(words, keys) : null;
+    return words.map((w, i) => {
+      const alnum = [...w].map((c) => /[a-z0-9]/i.test(c));
+      if (round === "copy") return alnum.map(() => false);
+      if (gaps) return alnum.map((a) => gaps[i] && a);
+      const n = alnum.filter(Boolean).length;
+      let seen = false;
+      return alnum.map((a) => { if (!a) return false; if (!seen) { seen = true; return false; } return n > 2; });
+    });
+  };
+
+  const ROUNDS = [
+    { id: "copy", name: "copy", tip: "Type it exactly. Every word goes through your head once." },
+    { id: "gaps", name: "gaps", tip: "Key terms are hidden. Type them from memory; space on an empty gap skips it and shows the answer." },
+    { id: "initials", name: "first letters", tip: "Only first letters are left. Rebuild every word from memory." }
+  ];
+  let ET = null;
+  const destroyET = () => {
+    if (ET) { ET.destroy(); ET = null; }
+    document.body.classList.remove("et-focus");
+  };
+
+  const mountEssayType = (host, opts) => {
+    const passages = opts.passages.filter((p) => p.text && typeWords(p.text).length);
+    const st = { p: 0, r: 0, words: [], mask: [], typed: [], ok: [], done: [], cur: 0, start: 0, end: 0, keys: 0, good: 0, finished: false };
+    let live = null, idleT = null;
+
+    host.innerHTML = `
+      <div class="et">
+        <div class="et-top">
+          <span class="et-logo">essaytype</span>
+          <div class="et-config">
+            ${passages.length > 1 ? `<div class="et-group" role="group" aria-label="What to type">${passages.map((p, i) =>
+              `<button type="button" data-et-p="${i}" aria-pressed="${i === 0}">${esc(p.label)}</button>`).join("")}</div>` : ""}
+            <div class="et-group" role="group" aria-label="Round">${ROUNDS.map((r, i) =>
+              `<button type="button" data-et-r="${i}" aria-pressed="${i === 0}">${r.name}</button>`).join("")}</div>
+          </div>
+        </div>
+        <p class="et-tip"></p>
+        <div class="et-live" aria-hidden="true"><span class="et-count"></span><span class="et-wpm"></span></div>
+        <div class="et-wrap">
+          <div class="et-words" aria-hidden="true"></div>
+          <input class="et-input" type="text" aria-label="Type the passage" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <div class="et-blur">Click here or press any key to type</div>
+        </div>
+        <div class="et-result" hidden></div>
+        <p class="et-keys"><kbd>esc</kbd> restart the round</p>
+      </div>`;
+    const root = host.querySelector(".et");
+    const wordsEl = root.querySelector(".et-words");
+    const input = root.querySelector(".et-input");
+    const resultEl = root.querySelector(".et-result");
+    const wrap = root.querySelector(".et-wrap");
+    let wordEls = [], caret = null;
+
+    const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+    const isHiddenWord = (i) => st.mask[i].some(Boolean);
+
+    const letterHTML = (i) => {
+      const w = st.words[i], t = st.typed[i], m = st.mask[i], done = st.done[i];
+      let out = "";
+      for (let j = 0; j < w.length; j++) {
+        const c = w[j];
+        if (j < t.length) {
+          if (same(t[j], c)) out += `<span class="l ok${m[j] ? " rec" : ""}">${esc(c)}</span>`;
+          else out += `<span class="l bad">${esc(m[j] ? t[j] : c)}</span>`;
+        } else if (m[j]) out += done ? `<span class="l reveal">${esc(c)}</span>` : `<span class="l h">${esc(c)}</span>`;
+        else out += `<span class="l">${esc(c)}</span>`;
+      }
+      for (let j = w.length; j < t.length; j++) out += `<span class="l bad x">${esc(t[j])}</span>`;
+      return out;
+    };
+    const paintWord = (i) => {
+      const el = wordEls[i];
+      el.innerHTML = letterHTML(i);
+      el.className = "w" + (st.done[i] && !st.ok[i] ? " err" : "") + (i === st.cur && !st.finished ? " cur" : "");
+    };
+    const placeCaret = () => {
+      const el = wordEls[st.cur];
+      if (!el || st.finished) { if (caret) caret.style.opacity = "0"; return; }
+      caret.style.opacity = "";
+      const letters = el.children, n = st.typed[st.cur].length;
+      let x;
+      if (n < letters.length) x = letters[n].offsetLeft;
+      else { const last = letters[letters.length - 1]; x = last.offsetLeft + last.offsetWidth; }
+      const lh = el.offsetHeight || 1;
+      const line = Math.round(el.offsetTop / lh);
+      wordsEl.style.transform = `translateY(${-Math.max(0, line - 1) * lh}px)`;
+      caret.style.transform = `translate(${x}px, ${el.offsetTop}px)`;
+    };
+    const updateLive = () => {
+      const total = st.words.length;
+      root.querySelector(".et-count").textContent = `${Math.min(st.cur, total)}/${total}`;
+      const wpm = st.start ? Math.round(wpmNow(performance.now())) : 0;
+      root.querySelector(".et-wpm").textContent = st.start ? `${wpm} wpm` : "";
+    };
+    const wpmNow = (t) => {
+      const mins = Math.max((t - st.start) / 60000, 1 / 60);
+      let chars = 0;
+      st.words.forEach((w, i) => { if (st.done[i] && st.ok[i]) chars += w.length + 1; });
+      return chars / 5 / mins;
+    };
+
+    const build = () => {
+      clearInterval(live); live = null;
+      const p = passages[st.p], round = ROUNDS[st.r].id;
+      st.words = typeWords(p.text);
+      st.mask = maskFor(st.words, round, p.keys || []);
+      st.typed = st.words.map(() => "");
+      st.ok = st.words.map(() => false);
+      st.done = st.words.map(() => false);
+      st.cur = 0; st.start = 0; st.end = 0; st.keys = 0; st.good = 0; st.finished = false;
+      root.dataset.round = round;
+      root.querySelector(".et-tip").textContent = ROUNDS[st.r].tip;
+      root.querySelectorAll("[data-et-r]").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.etR) === st.r)));
+      root.querySelectorAll("[data-et-p]").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.etP) === st.p)));
+      wordsEl.innerHTML = st.words.map(() => `<span class="w"></span>`).join("") + `<span class="et-caret"></span>`;
+      wordsEl.style.transform = "";
+      wordEls = [...wordsEl.querySelectorAll(".w")];
+      caret = wordsEl.querySelector(".et-caret");
+      st.words.forEach((_, i) => paintWord(i));
+      resultEl.hidden = true;
+      wrap.hidden = false;
+      root.querySelector(".et-live").hidden = false;
+      input.value = "";
+      document.body.classList.remove("et-focus");
+      updateLive();
+      requestAnimationFrame(placeCaret);
+      input.focus({ preventScroll: true });
+    };
+
+    const commit = (skipped) => {
+      const i = st.cur;
+      st.done[i] = true;
+      st.ok[i] = !skipped && same(st.typed[i], st.words[i]);
+      st.keys++; if (st.ok[i]) st.good++;
+      paintWord(i);
+      st.cur++;
+      if (st.cur >= st.words.length) return finish();
+      paintWord(st.cur);
+    };
+    const addChar = (c) => {
+      const i = st.cur, w = st.words[i];
+      if (c === " ") {
+        if (!st.typed[i].length) { if (isHiddenWord(i)) commit(true); return; }
+        return commit(false);
+      }
+      if (st.typed[i].length >= w.length + 12) return;
+      const j = st.typed[i].length;
+      st.typed[i] += c;
+      st.keys++;
+      if (j < w.length && same(c, w[j])) st.good++;
+      paintWord(i);
+      if (i === st.words.length - 1 && same(st.typed[i], w)) commit(false);
+    };
+
+    const onInput = () => {
+      if (st.finished) { input.value = ""; return; }
+      const v = input.value, prev = st.typed[st.cur];
+      if (!st.start && v.length) {
+        st.start = performance.now();
+        live = setInterval(updateLive, 500);
+      }
+      if (v.startsWith(prev)) [...v.slice(prev.length)].forEach((c) => { if (!st.finished) addChar(c); });
+      else if (!v.includes(" ") && prev.startsWith(v)) { st.typed[st.cur] = v; paintWord(st.cur); }
+      else { st.typed[st.cur] = ""; [...v].forEach((c) => { if (!st.finished) addChar(c); }); }
+      if (st.finished) return;
+      input.value = st.typed[st.cur];
+      document.body.classList.add("et-focus");
+      root.classList.add("typing");
+      clearTimeout(idleT); idleT = setTimeout(() => root.classList.remove("typing"), 600);
+      updateLive();
+      placeCaret();
+    };
+    const onKey = (ev) => {
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); build(); return; }
+      if (ev.key === "Backspace" && !input.value && st.cur > 0 && !st.ok[st.cur - 1] && !st.finished) {
+        ev.preventDefault();
+        paintWord(st.cur);
+        st.cur--;
+        st.done[st.cur] = false;
+        input.value = st.typed[st.cur];
+        paintWord(st.cur);
+        updateLive();
+        placeCaret();
+      }
+    };
+
+    const finish = () => {
+      st.finished = true;
+      st.end = performance.now();
+      clearInterval(live); live = null;
+      document.body.classList.remove("et-focus");
+      root.classList.remove("typing");
+      input.value = "";
+      input.blur();
+      const secs = Math.max(1, Math.round((st.end - st.start) / 1000));
+      const wpm = Math.round(wpmNow(st.end));
+      const acc = st.keys ? Math.round((100 * st.good) / st.keys) : 100;
+      const correct = st.ok.filter(Boolean).length;
+      const hiddenIdx = st.words.map((_, i) => i).filter(isHiddenWord);
+      const recalled = hiddenIdx.filter((i) => st.ok[i]).length;
+      const missed = [...new Set(hiddenIdx.filter((i) => !st.ok[i]).map((i) => st.words[i]))];
+      const typos = [...new Set(st.words.filter((_, i) => !st.ok[i]))];
+      const last = st.r === ROUNDS.length - 1;
+      const round = ROUNDS[st.r].id;
+      let note;
+      if (round === "copy") note = acc >= 95 ? "Clean copy. Now take the key terms away." : "Go again until it flows, or move on to gaps.";
+      else if (!hiddenIdx.length) note = "Nothing was hidden in this passage.";
+      else if (recalled === hiddenIdx.length) note = last ? "Every word rebuilt from first letters. You’re ready to hide it all and type it back." : "Every hidden term came back. Try first letters only.";
+      else note = "Read the missed words, then run this round again.";
+      wrap.hidden = true;
+      root.querySelector(".et-live").hidden = true;
+      resultEl.hidden = false;
+      resultEl.innerHTML = `
+        <div class="et-res">
+          <div class="et-big">
+            <div><span class="et-lab">wpm</span><span class="et-num">${wpm}</span></div>
+            <div><span class="et-lab">acc</span><span class="et-num">${acc}%</span></div>
+          </div>
+          <dl class="et-stats">
+            <div><dt>round</dt><dd>${ROUNDS[st.r].name}</dd></div>
+            <div><dt>time</dt><dd>${mmss(secs)}</dd></div>
+            <div><dt>words</dt><dd>${correct}/${st.words.length}</dd></div>
+            ${hiddenIdx.length ? `<div><dt>recalled</dt><dd>${recalled}/${hiddenIdx.length}</dd></div>` : ""}
+          </dl>
+        </div>
+        <p class="et-note">${esc(note)}</p>
+        ${missed.length ? `<p class="et-missed"><span>missed</span> ${missed.map((w) => `<b>${esc(w)}</b>`).join(" ")}</p>`
+          : round === "copy" && typos.length ? `<p class="et-missed"><span>typos</span> ${typos.slice(0, 12).map((w) => `<b>${esc(w)}</b>`).join(" ")}</p>` : ""}
+        <div class="et-actions">
+          ${last ? "" : `<button type="button" data-et-next>next: ${ROUNDS[st.r + 1].name}</button>`}
+          <button type="button" data-et-again>again</button>
+        </div>`;
+      const nb = resultEl.querySelector("[data-et-next]") || resultEl.querySelector("[data-et-again]");
+      nb.focus({ preventScroll: true });
+      if (last && opts.onLastRound) opts.onLastRound();
+    };
+
+    const onClick = (ev) => {
+      const b = ev.target.closest("[data-et-r], [data-et-p], [data-et-next], [data-et-again]");
+      if (b) {
+        if (b.dataset.etR) st.r = Number(b.dataset.etR);
+        else if (b.dataset.etP) st.p = Number(b.dataset.etP);
+        else if (b.hasAttribute("data-et-next")) st.r = Math.min(st.r + 1, ROUNDS.length - 1);
+        build();
+        return;
+      }
+      if (ev.target.closest(".et-wrap")) input.focus({ preventScroll: true });
+    };
+    const onFocus = () => root.classList.remove("blurred");
+    const onBlur = () => root.classList.add("blurred");
+    const onResize = () => placeCaret();
+
+    root.addEventListener("click", onClick);
+    input.addEventListener("input", onInput);
+    input.addEventListener("keydown", onKey);
+    input.addEventListener("focus", onFocus);
+    input.addEventListener("blur", onBlur);
+    window.addEventListener("resize", onResize);
+    build();
+
+    return {
+      input,
+      focus: () => { if (!st.finished) input.focus({ preventScroll: true }); },
+      destroy: () => {
+        clearInterval(live); clearTimeout(idleT);
+        window.removeEventListener("resize", onResize);
+        document.body.classList.remove("et-focus");
+      }
+    };
+  };
+
   /* ---------- scheduling ---------- */
   const atts = (id) => S.att[id] || [];
   const cleanDaysIn = (s, id) => new Set((s.att[id] || []).filter((a) => a.score >= 0.9 && !a.hint).map((a) => a.d)).size;
@@ -528,8 +856,10 @@
     const stepName = (s) => s === "warm" ? "Warm-up guess" : s === "draw" ? "The diagram"
       : s === "whole" ? "The whole essay" : secs[s].h;
 
+    const drawText = (t) => String(t || "").replace(/^Professor’s[^:]{0,40}:\s*/, "").replace(/\s*Swap this for[^.]*\./, "");
     const render = () => {
       stopTicker();
+      destroyET();
       const s = steps[L.step];
       app.innerHTML = `
         ${topbar()}
@@ -540,6 +870,14 @@
           <h1 class="question">${esc(e.q)}</h1>
           <section class="stage">${stage(s)}</section>
         </main>`;
+      const host = document.getElementById("etHost");
+      if (host) {
+        const passages = s === "draw"
+          ? [{ label: "story", text: e.hook, keys: keyTokens(e.atoms) }, { label: "diagram", text: drawText(e.draw), keys: keyTokens(e.atoms) }]
+          : [{ label: "points", text: (L.targets || secs[s].atoms).map((a) => a.s).join(" "), keys: keyTokens(L.targets || secs[s].atoms) }];
+        ET = mountEssayType(host, { passages, onLastRound: () => nudgeNext(host) });
+        window.scrollTo(0, Math.max(0, host.getBoundingClientRect().top + window.scrollY - 96));
+      }
       const box = app.querySelector(".stage textarea");
       if (box) box.focus();
       if (box) box.addEventListener("keydown", (ev) => {
@@ -564,13 +902,22 @@
           <h2>Sketch it from memory</h2>
           <p>Take a sheet of paper and draw the diagram without looking: metabolites, arrows, enzymes, cofactors. Then compare.</p>
           <div class="actions"><button class="btn" data-l="compare">Compare with the original</button></div>`;
+        if (L.phase === "type") return `
+          <h2>Type the story</h2>
+          <p class="hint">Copy it first, then gaps, then first letters. Switch to <em>diagram</em> to type the pathway too. When it flows, hide everything and sketch.</p>
+          <div id="etHost"></div>
+          <div class="actions">
+            <button class="btn" data-l="hide" data-nudge>I’m ready: hide it and sketch</button>
+            <button class="btn ghost" data-l="read">Back to reading</button>
+          </div>`;
         return `
-          ${L.phase === "compare" ? `<p class="callout">Correct your sketch where it differs. If it was far off, read it once more and sketch again.</p>` : `<p>Read the diagram and the story for two minutes. Then hide them and sketch the diagram on paper.</p>${timerHTML(120, "Reading time")}`}
+          ${L.phase === "compare" ? `<p class="callout">Correct your sketch where it differs. If it was far off, read it once more and sketch again.</p>` : `<p>Read the diagram and the story for two minutes. Then type the story in EssayType, then hide everything and sketch the diagram on paper.</p>${timerHTML(120, "Reading time")}`}
           ${drawBlock(e)}
           ${storyBlock(e)}
           <div class="actions">
-            <button class="btn${L.phase === "compare" ? " ghost" : ""}" data-l="hide"${L.phase === "compare" ? "" : " data-nudge"}>${L.phase === "compare" ? "Sketch it again" : "Hide it and sketch"}</button>
-            ${L.phase === "compare" ? `<button class="btn" data-l="next">Next: the sections</button>` : ""}
+            ${L.phase === "compare"
+              ? `<button class="btn ghost" data-l="hide">Sketch it again</button><button class="btn" data-l="next">Next: the sections</button>`
+              : `<button class="btn" data-l="type" data-nudge>Type it in EssayType</button><button class="btn ghost" data-l="hide">Skip to sketching</button>`}
           </div>`;
       }
 
@@ -589,11 +936,19 @@
       if (L.phase === "read") return `
         <h2>${esc(sec.h)}</h2>
         <p class="hint">${L.targets
-          ? `Read the ${plural(L.targets.length, "point")} you missed, about ${mmss(readSecs)}. Then hide them and type them back.`
-          : `Read these ${plural(sec.atoms.length, "point")}, about ${mmss(readSecs)}. Notice how they connect. Then hide them and type them back from memory.`}</p>
+          ? `Read the ${plural(L.targets.length, "point")} you missed, about ${mmss(readSecs)}. Then type them in EssayType, then hide them and type them back.`
+          : `Read these ${plural(sec.atoms.length, "point")}, about ${mmss(readSecs)}. Notice how they connect. Then type them in EssayType, then hide them and type them back from memory.`}</p>
         ${timerHTML(readSecs, "Reading time", { compact: true })}
         ${atomList(shown, { noSrc: true })}
-        <div class="actions"><button class="btn" data-l="hide" data-nudge>Hide and type them back</button></div>`;
+        <div class="actions"><button class="btn" data-l="type" data-nudge>Type it in EssayType</button><button class="btn ghost" data-l="hide">Skip to hide and type back</button></div>`;
+      if (L.phase === "type") return `
+        <h2>${esc(sec.h)}</h2>
+        <p class="hint">Copy first, then gaps, then first letters. When it flows, hide everything and type it back in your own words.</p>
+        <div id="etHost"></div>
+        <div class="actions">
+          <button class="btn" data-l="hide" data-nudge>I’m ready: hide and type them back</button>
+          <button class="btn ghost" data-l="read">Back to reading</button>
+        </div>`;
       if (L.phase === "hidden") return `
         <h2>${esc(sec.h)}</h2>
         <p class="hint">${L.targets
@@ -638,6 +993,8 @@
       const s = steps[L.step];
       if (act === "next") { L.step = Math.min(L.step + 1, steps.length - 1); L.phase = "read"; L.targets = null; L.result = null; window.scrollTo(0, 0); }
       else if (act === "hide") L.phase = "hidden";
+      else if (act === "type") L.phase = "type";
+      else if (act === "read") L.phase = "read";
       else if (act === "compare") L.phase = "compare";
       else if (act === "reread") {
         L.targets = secs[s].atoms.filter((a) => a.tier === "pass" && !L.recalled[a.id]);
@@ -891,11 +1248,22 @@
           <h2>A new essay: press Learn</h2>
           <ol>
             <li><strong>Warm-up guess.</strong> Type what you know before reading. Trying first makes the reading stick.</li>
-            <li><strong>The diagram.</strong> Read it, hide it, sketch it on paper, compare, fix.</li>
-            <li><strong>Section by section.</strong> Read a few points, hide them, type them back. Re-read only what you missed and type those again, until every pass point has come back once.</li>
+            <li><strong>The diagram.</strong> Read it with the story, type the story in EssayType, then hide it, sketch it on paper, compare, fix.</li>
+            <li><strong>Section by section.</strong> Read a few points, run them through EssayType, then hide them and type them back. Re-read only what you missed and go again, until every pass point has come back once.</li>
             <li><strong>The whole essay.</strong> After a short break, from the question alone. This starts its review schedule.</li>
           </ol>
           <p class="hint">About 25 to 40 minutes per essay. Two new essays a day for the first ten days.</p>
+        </section>
+
+        <section class="block">
+          <h2>EssayType</h2>
+          <p>The typing game inside Learn. Three rounds, each harder than the last:</p>
+          <ol>
+            <li><strong>Copy.</strong> Type the text exactly. It makes you read every word instead of skimming.</li>
+            <li><strong>Gaps.</strong> Key terms disappear and you type them from memory. Recalled words turn yellow; missed ones show up in red.</li>
+            <li><strong>First letters.</strong> Only first letters are left. You rebuild every word yourself.</li>
+          </ol>
+          <p class="hint">Typing fast isn’t the goal; getting the gaps right is. Copying alone is still just reading, so always finish with “hide and type them back”.</p>
         </section>
 
         <section class="block">
@@ -922,6 +1290,7 @@
             <li><strong>The question is the cue.</strong> You always start from the exact exam wording, so that wording triggers the essay on the day.</li>
             <li><strong>Feedback and a second go.</strong> Finding the gap yourself, then trying again, fixes it better than just reading the answer.</li>
             <li><strong>Pictures and stories.</strong> The diagram and the story give each fact a hook.</li>
+            <li><strong>Fading cues.</strong> EssayType removes help step by step (all text, then gaps, then first letters), so recall gets harder just as you get better.</li>
             <li><strong>Honest confidence.</strong> Rating how sure you feel shows which essays only feel familiar.</li>
           </ul>
         </section>
@@ -1158,11 +1527,20 @@
     if (t) t.querySelector(".atom-text").classList.add("peek");
   });
   document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !modal.hidden) closeModal(); });
+  // Any key brings you back into EssayType; moving the mouse brings the page back.
+  document.addEventListener("keydown", (ev) => {
+    if (!ET || document.activeElement === ET.input || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === "TEXTAREA" || tag === "SELECT" || (tag === "INPUT" && document.activeElement !== ET.input)) return;
+    if (ev.key.length === 1 && !(tag === "BUTTON" && (ev.key === " "))) ET.focus();
+  });
+  document.addEventListener("mousemove", () => document.body.classList.remove("et-focus"), { passive: true });
 
   /* ---------- router ---------- */
   const route = () => {
     clearInterval(timer); timer = null;
     stopTicker();
+    destroyET();
     closeModal();
     app.onclick = null;
     const [view, arg] = location.hash.replace(/^#\/?/, "").split("/");
