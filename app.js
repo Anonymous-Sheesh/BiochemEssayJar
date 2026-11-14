@@ -352,9 +352,9 @@
   };
 
   const ROUNDS = [
-    { id: "copy", name: "copy", tip: "Type it exactly. Every word goes through your head once." },
-    { id: "gaps", name: "gaps", tip: "Key terms are hidden. Type them from memory; space on an empty gap skips it and shows the answer." },
-    { id: "initials", name: "first letters", tip: "Only first letters are left. Rebuild every word from memory." }
+    { id: "copy", name: "copy", tip: "Start from the question, then type everything that belongs to it." },
+    { id: "gaps", name: "gaps", tip: "The question stays. Key terms are hidden: type them from memory. Space on an empty gap skips it." },
+    { id: "initials", name: "first letters", tip: "The question stays. Only first letters are left: rebuild every word." }
   ];
   let ET = null;
   const destroyET = () => {
@@ -369,8 +369,9 @@
 
     host.innerHTML = `
       <div class="et">
+        <span class="et-mark" aria-hidden="true">${esc(opts.cue.num)}</span>
         <div class="et-top">
-          <span class="et-logo">essaytype</span>
+          <p class="et-cue"><span class="et-qnum">Q${esc(opts.cue.num)}</span><span class="et-qtext">${esc(opts.cue.q)}</span><span class="et-qsec"></span></p>
           <div class="et-config">
             ${passages.length > 1 ? `<div class="et-group" role="group" aria-label="What to type">${passages.map((p, i) =>
               `<button type="button" data-et-p="${i}" aria-pressed="${i === 0}">${esc(p.label)}</button>`).join("")}</div>` : ""}
@@ -386,7 +387,7 @@
           <div class="et-blur">Click here or press any key to type</div>
         </div>
         <div class="et-result" hidden></div>
-        <p class="et-keys"><kbd>esc</kbd> restart the round</p>
+        <p class="et-keys"><span><kbd>tab</kbd> arrow</span><span><kbd>esc</kbd> restart</span><span class="et-logo">essaytype</span></p>
       </div>`;
     const root = host.querySelector(".et");
     const wordsEl = root.querySelector(".et-words");
@@ -415,7 +416,7 @@
     const paintWord = (i) => {
       const el = wordEls[i];
       el.innerHTML = letterHTML(i);
-      el.className = "w" + (st.done[i] && !st.ok[i] ? " err" : "") + (i === st.cur && !st.finished ? " cur" : "");
+      el.className = "w " + st.roles[i] + (st.done[i] && !st.ok[i] ? " err" : "") + (i === st.cur && !st.finished ? " cur" : "");
     };
     const placeCaret = () => {
       const el = wordEls[st.cur];
@@ -446,8 +447,15 @@
     const build = () => {
       clearInterval(live); live = null;
       const p = passages[st.p], round = ROUNDS[st.r].id;
-      st.words = typeWords(p.text);
-      st.mask = maskFor(st.words, round, p.keys || []);
+      // Every round starts by typing the question itself, so the question becomes the first link of the chain.
+      const qWords = typeWords(opts.cue.q), hWords = p.head ? typeWords(p.head) : [];
+      const body = [...hWords, ...(hWords.length ? ["->"] : []), ...typeWords(p.text)];
+      st.words = [...qWords, "->", ...body];
+      st.roles = [...qWords.map(() => "q"), "a", ...hWords.map(() => "hd"), ...(hWords.length ? ["a"] : []), ...typeWords(p.text).map(() => "c")];
+      st.mask = [...qWords.map((w) => [...w].map(() => false)), [false, false], ...maskFor(body, round, p.keys || [])];
+      root.querySelector(".et-qsec").textContent = p.head ? p.head : "";
+      const cue = root.querySelector(".et-cue");
+      cue.classList.remove("pulse"); void cue.offsetWidth; cue.classList.add("pulse");
       st.typed = st.words.map(() => "");
       st.ok = st.words.map(() => false);
       st.done = st.words.map(() => false);
@@ -496,16 +504,8 @@
       if (i === st.words.length - 1 && same(st.typed[i], w)) commit(false);
     };
 
-    const onInput = () => {
-      if (st.finished) { input.value = ""; return; }
-      const v = input.value, prev = st.typed[st.cur];
-      if (!st.start && v.length) {
-        st.start = performance.now();
-        live = setInterval(updateLive, 500);
-      }
-      if (v.startsWith(prev)) [...v.slice(prev.length)].forEach((c) => { if (!st.finished) addChar(c); });
-      else if (!v.includes(" ") && prev.startsWith(v)) { st.typed[st.cur] = v; paintWord(st.cur); }
-      else { st.typed[st.cur] = ""; [...v].forEach((c) => { if (!st.finished) addChar(c); }); }
+    const begin = () => { if (!st.start) { st.start = performance.now(); live = setInterval(updateLive, 500); } };
+    const after = () => {
       if (st.finished) return;
       input.value = st.typed[st.cur];
       document.body.classList.add("et-focus");
@@ -514,7 +514,29 @@
       updateLive();
       placeCaret();
     };
+    const onInput = () => {
+      if (st.finished) { input.value = ""; return; }
+      const v = input.value, prev = st.typed[st.cur];
+      if (v.length) begin();
+      if (v.startsWith(prev)) [...v.slice(prev.length)].forEach((c) => { if (!st.finished) addChar(c); });
+      else if (!v.includes(" ") && prev.startsWith(v)) { st.typed[st.cur] = v; paintWord(st.cur); }
+      else { st.typed[st.cur] = ""; [...v].forEach((c) => { if (!st.finished) addChar(c); }); }
+      after();
+    };
     const onKey = (ev) => {
+      if (ev.key === "Tab" && !ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+        ev.preventDefault();
+        if (st.finished) return;
+        begin();
+        const target = st.words[st.cur], typed = st.typed[st.cur];
+        if (/^<?->$/.test(target) && target.startsWith(typed)) {
+          const at = st.cur;
+          [...target.slice(typed.length)].forEach((c) => { if (!st.finished) addChar(c); });
+          if (!st.finished && st.cur === at) addChar(" ");
+        } else [..."->"].forEach((c) => { if (!st.finished) addChar(c); });
+        after();
+        return;
+      }
       if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); build(); return; }
       if (ev.key === "Backspace" && !input.value && st.cur > 0 && !st.ok[st.cur - 1] && !st.finished) {
         ev.preventDefault();
@@ -540,7 +562,7 @@
       const wpm = Math.round(wpmNow(st.end));
       const acc = st.keys ? Math.round((100 * st.good) / st.keys) : 100;
       const correct = st.ok.filter(Boolean).length;
-      const hiddenIdx = st.words.map((_, i) => i).filter(isHiddenWord);
+      const hiddenIdx = st.words.map((_, i) => i).filter((i) => isHiddenWord(i));
       const recalled = hiddenIdx.filter((i) => st.ok[i]).length;
       const missed = [...new Set(hiddenIdx.filter((i) => !st.ok[i]).map((i) => st.words[i]))];
       const typos = [...new Set(st.words.filter((_, i) => !st.ok[i]))];
@@ -874,8 +896,8 @@
       if (host) {
         const passages = s === "draw"
           ? [{ label: "story", text: e.hook, keys: keyTokens(e.atoms) }, { label: "diagram", text: drawText(e.draw), keys: keyTokens(e.atoms) }]
-          : [{ label: "points", text: (L.targets || secs[s].atoms).map((a) => a.s).join(" "), keys: keyTokens(L.targets || secs[s].atoms) }];
-        ET = mountEssayType(host, { passages, onLastRound: () => nudgeNext(host) });
+          : [{ label: "points", head: secs[s].h, text: (L.targets || secs[s].atoms).map((a) => a.s).join(" "), keys: keyTokens(L.targets || secs[s].atoms) }];
+        ET = mountEssayType(host, { passages, cue: { num: e.id, q: e.q }, onLastRound: () => nudgeNext(host) });
         window.scrollTo(0, Math.max(0, host.getBoundingClientRect().top + window.scrollY - 96));
       }
       const box = app.querySelector(".stage textarea");
@@ -904,7 +926,7 @@
           <div class="actions"><button class="btn" data-l="compare">Compare with the original</button></div>`;
         if (L.phase === "type") return `
           <h2>Type the story</h2>
-          <p class="hint">Copy it first, then gaps, then first letters. Switch to <em>diagram</em> to type the pathway too. When it flows, hide everything and sketch.</p>
+          <p class="hint">Each round starts with the question, so the story is always chained to it. Copy first, then gaps, then first letters. Switch to <em>diagram</em> to type the pathway too.</p>
           <div id="etHost"></div>
           <div class="actions">
             <button class="btn" data-l="hide" data-nudge>I’m ready: hide it and sketch</button>
@@ -943,7 +965,7 @@
         <div class="actions"><button class="btn" data-l="type" data-nudge>Type it in EssayType</button><button class="btn ghost" data-l="hide">Skip to hide and type back</button></div>`;
       if (L.phase === "type") return `
         <h2>${esc(sec.h)}</h2>
-        <p class="hint">Copy first, then gaps, then first letters. When it flows, hide everything and type it back in your own words.</p>
+        <p class="hint">Each round runs question, then section, then points, so the points are always chained to their question. Copy first, then gaps, then first letters.</p>
         <div id="etHost"></div>
         <div class="actions">
           <button class="btn" data-l="hide" data-nudge>I’m ready: hide and type them back</button>
@@ -954,6 +976,7 @@
         <p class="hint">${L.targets
           ? `Type the ${plural(L.targets.length, "point")} you missed. Your own words, any order.`
           : `Type everything from this section: ${plural(passTotal, "pass point")}${sec.atoms.length > passTotal ? ` and ${plural(sec.atoms.length - passTotal, "boost point")}` : ""}. Your own words, any order.`}</p>
+        <p class="cue-line"><span>Q${e.id}</span> ${esc(e.q)} <b>→ ${esc(sec.h)}</b></p>
         <label class="sr" for="secBox">Your recall</label>
         <textarea id="secBox" class="answer-box short" spellcheck="false" autocomplete="off"></textarea>
         <div class="actions"><button class="btn" data-l="check">Check</button></div>`;
@@ -1047,7 +1070,7 @@
             <button type="button" class="btn" id="checkBtn">${exam ? "Hand in" : "Check my answer"}</button>
           </div>
         </div>
-        <p class="kbd-hint">Ctrl + Enter also checks.</p>
+        <p class="kbd-hint">Tab types an arrow. Ctrl + Enter checks.</p>
         <div id="result"></div>
       </main>`;
 
@@ -1257,13 +1280,13 @@
 
         <section class="block">
           <h2>EssayType</h2>
-          <p>The typing game inside Learn. Three rounds, each harder than the last:</p>
+          <p>The typing game inside Learn. Every round starts with you typing the question, then the section, then the content, so the content is always chained to the question it belongs to. The question stays pinned above the text in cyan the whole time. Three rounds, each harder than the last:</p>
           <ol>
             <li><strong>Copy.</strong> Type the text exactly. It makes you read every word instead of skimming.</li>
             <li><strong>Gaps.</strong> Key terms disappear and you type them from memory. Recalled words turn yellow; missed ones show up in red.</li>
             <li><strong>First letters.</strong> Only first letters are left. You rebuild every word yourself.</li>
           </ol>
-          <p class="hint">Typing fast isn’t the goal; getting the gaps right is. Copying alone is still just reading, so always finish with “hide and type them back”.</p>
+          <p class="hint">Tab types an arrow. Typing fast isn’t the goal; getting the gaps right is. Copying alone is still just reading, so always finish with “hide and type them back”.</p>
         </section>
 
         <section class="block">
@@ -1287,7 +1310,7 @@
             <li><strong>Retrieval practice.</strong> Recalling beats rereading for long-term memory, and free recall is exactly what an essay exam asks for.</li>
             <li><strong>Spacing.</strong> Short sessions spread over days beat one long session, so reviews are scheduled, not crammed.</li>
             <li><strong>Relearning to criterion.</strong> Every point has to come back at least once, then on three separate days.</li>
-            <li><strong>The question is the cue.</strong> You always start from the exact exam wording, so that wording triggers the essay on the day.</li>
+            <li><strong>The question is the cue.</strong> You always start from the exact exam wording, and in EssayType you type it before every round, so that wording is what launches the essay on the day.</li>
             <li><strong>Feedback and a second go.</strong> Finding the gap yourself, then trying again, fixes it better than just reading the answer.</li>
             <li><strong>Pictures and stories.</strong> The diagram and the story give each fact a hook.</li>
             <li><strong>Fading cues.</strong> EssayType removes help step by step (all text, then gaps, then first letters), so recall gets harder just as you get better.</li>
@@ -1535,6 +1558,16 @@
     if (ev.key.length === 1 && !(tag === "BUTTON" && (ev.key === " "))) ET.focus();
   });
   document.addEventListener("mousemove", () => document.body.classList.remove("et-focus"), { passive: true });
+  // In answer boxes, Tab types an arrow (Shift + Tab still moves focus).
+  document.addEventListener("keydown", (ev) => {
+    const t = ev.target;
+    if (ev.key !== "Tab" || ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+    if (!t || t.tagName !== "TEXTAREA" || !t.classList.contains("answer-box") || t.readOnly) return;
+    ev.preventDefault();
+    const before = t.value.slice(0, t.selectionStart);
+    t.setRangeText((!before || /\s$/.test(before) ? "" : " ") + "→ ", t.selectionStart, t.selectionEnd, "end");
+    t.dispatchEvent(new Event("input", { bubbles: true }));
+  });
 
   /* ---------- router ---------- */
   const route = () => {
