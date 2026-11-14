@@ -347,6 +347,10 @@ mark {
 .learn-check { margin-top: 0.5rem; }
 .learn .your-answer { margin: 1rem 0; }
 
+.cue-line { margin: 0 0 0.6rem; color: var(--muted); font-size: 0.95rem; max-width: 52em; }
+.cue-line span { display: inline-block; margin-right: 0.35rem; padding: 0 0.4em; border: 1.5px solid currentColor; border-radius: 5px; font-weight: 600; font-size: 0.85rem; }
+.cue-line b { color: var(--ink); font-weight: 600; }
+
 /* ---------- users ---------- */
 .user-list { list-style: none; margin: 1.5rem 0; padding: 0; border-top: 1px solid var(--line); }
 .user-list li {
@@ -428,14 +432,28 @@ mark {
 .et {
   --et-bg: #323437; --et-alt: #2c2e31; --et-main: #e2b714; --et-sub: #646669; --et-dim: #8a8c90;
   --et-untyped: #7d7f83; --et-text: #d1d0c5; --et-err: #ca4754; --et-err-x: #7e2a33;
+  --et-q: #9CD5E0; --et-q-dim: #6d929b;
   --et-font: "Roboto Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   position: relative; margin: 1rem 0 1.5rem; padding: 1.35rem 1.6rem 1.1rem;
   background: var(--et-bg); color: var(--et-text); border-radius: 14px;
   font-family: var(--et-font);
 }
 .et :focus-visible { outline-color: var(--et-main); }
-.et-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.6rem 1rem; transition: opacity 0.25s; }
-.et-logo { font-size: 1.3rem; font-weight: 500; letter-spacing: -0.03em; color: var(--et-text); }
+.et-top { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.75rem 1.25rem; }
+/* the question: pinned above everything you type, and never fades */
+.et-cue { flex: 1 1 22rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem 0.6rem; margin: 0; color: var(--et-q); }
+.et-qnum { flex: none; padding: 0.1em 0.45em; border: 1.5px solid var(--et-q); border-radius: 6px; font-size: 0.95rem; font-weight: 500; line-height: 1.3; }
+.et-qtext { font-size: 1.12rem; font-weight: 500; line-height: 1.4; letter-spacing: -0.01em; }
+.et-qsec { color: var(--et-text); font-size: 1rem; }
+.et-qsec:not(:empty)::before { content: "\2192\00a0"; color: var(--et-sub); }
+.et-cue.pulse .et-qtext { animation: cue-pulse 1.4s ease-out; }
+@keyframes cue-pulse { 0% { text-shadow: 0 0 0 rgba(156, 213, 224, 0); } 30% { text-shadow: 0 0 14px rgba(156, 213, 224, 0.75); } 100% { text-shadow: 0 0 0 rgba(156, 213, 224, 0); } }
+.et-mark {
+  position: absolute; right: 1.2rem; bottom: 0.1rem; z-index: 0; pointer-events: none; user-select: none;
+  font-size: 10rem; font-weight: 500; line-height: 1; letter-spacing: -0.06em; color: var(--et-q); opacity: 0.07;
+}
+.et-logo { margin-left: auto; color: var(--et-sub); letter-spacing: -0.02em; }
+.et-config { transition: opacity 0.25s; }
 .et-config { display: flex; flex-wrap: wrap; align-items: center; background: var(--et-alt); border-radius: 8px; padding: 0.25rem; }
 .et-group { display: flex; flex-wrap: wrap; }
 .et-group + .et-group { border-left: 3px solid var(--et-bg); margin-left: 0.25rem; padding-left: 0.25rem; }
@@ -445,11 +463,11 @@ mark {
 }
 .et-config button:hover { color: var(--et-text); }
 .et-config button[aria-pressed="true"] { color: var(--et-main); }
-.et-tip { margin: 0.9rem 0 0; color: var(--et-dim); font-size: 0.85rem; max-width: 70ch; transition: opacity 0.25s; }
+.et-tip { position: relative; z-index: 1; margin: 0.9rem 0 0; color: var(--et-dim); font-size: 0.85rem; max-width: 70ch; transition: opacity 0.25s; }
 .et-live { display: flex; gap: 1.5rem; height: 1.9rem; margin-top: 0.7rem; color: var(--et-main); font-size: 1.3rem; line-height: 1.9rem; }
 .et-live[hidden] { display: none; }
 
-.et-wrap { position: relative; font-size: 1.55rem; height: 4.8em; overflow: hidden; cursor: text; }
+.et-wrap { position: relative; z-index: 1; font-size: 1.55rem; height: 4.8em; overflow: hidden; cursor: text; }
 .et-words {
   position: relative; display: flex; flex-wrap: wrap; align-content: flex-start;
   line-height: 1.6em; transition: transform 0.12s ease;
@@ -461,6 +479,13 @@ mark {
 .et .l.ok.rec { color: var(--et-main); }
 .et .l.bad { color: var(--et-err); }
 .et .l.bad.x { color: var(--et-err-x); }
+/* question words are cyan, links are quiet, section names a touch heavier */
+.et .w.q .l { color: var(--et-q-dim); }
+.et .w.q .l.ok { color: var(--et-q); }
+.et .w.a .l { color: var(--et-sub); }
+.et .w.a .l.ok { color: var(--et-text); }
+.et .w.hd { font-weight: 500; }
+.et .w.q .l.bad, .et .w.a .l.bad { color: var(--et-err); }
 .et .l.h, .et .l.reveal {
   background: linear-gradient(currentColor, currentColor) no-repeat 50% 92% / 72% 0.08em;
 }
@@ -478,9 +503,10 @@ mark {
 .et.blurred .et-blur { display: grid; }
 .et.blurred .et-words { filter: blur(5px); opacity: 0.45; }
 
-.et-keys { margin: 0.9rem 0 0; color: var(--et-sub); font-size: 0.8rem; transition: opacity 0.25s; }
+.et-keys { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1.1rem; margin: 0.9rem 0 0; color: var(--et-sub); font-size: 0.8rem; transition: opacity 0.25s; }
 .et kbd { background: var(--et-sub); color: var(--et-bg); border-radius: 4px; padding: 0.05em 0.4em; font: inherit; }
 
+.et-result { position: relative; z-index: 1; }
 .et-result[hidden] { display: none; }
 .et-res { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 1.25rem 3rem; margin-top: 0.8rem; }
 .et-big { display: flex; gap: 2.5rem; }
@@ -505,7 +531,7 @@ mark {
 /* focus mode: once you start typing, everything else fades until you move the mouse */
 body.et-focus .topbar, body.et-focus .notice, body.et-focus .meta, body.et-focus .steps,
 body.et-focus .question, body.et-focus .stage > :not(#etHost), body.et-focus .foot { opacity: 0.08; }
-body.et-focus .et-top, body.et-focus .et-tip, body.et-focus .et-keys { opacity: 0; }
+body.et-focus .et-config, body.et-focus .et-tip, body.et-focus .et-keys { opacity: 0; }
 .topbar, .notice, .meta, .steps, .question, .stage > * { transition: opacity 0.3s ease; }
 
 /* ---------- footer ---------- */
@@ -530,6 +556,10 @@ body.et-focus .et-top, body.et-focus .et-tip, body.et-focus .et-keys { opacity: 
   .et-wrap { font-size: 1.12rem; }
   .et-live { font-size: 1.05rem; }
   .et-num { font-size: 2.6rem; }
+  .et-mark { font-size: 6.5rem; right: 0.8rem; }
+  .et-qtext { font-size: 1rem; }
+  .et-config { width: 100%; flex-direction: column; align-items: flex-start; }
+  .et-group + .et-group { border-left: 0; margin-left: 0; padding-left: 0; border-top: 3px solid var(--et-bg); width: 100%; }
   .et-big { gap: 1.75rem; }
   .et-res { gap: 1rem 2rem; }
   .timer.big .timer-dial { width: 96px; height: 96px; }
