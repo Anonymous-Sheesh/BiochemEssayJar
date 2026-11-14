@@ -778,6 +778,16 @@
       <p>${esc(e.draw)}</p>
     </section>`;
 
+  const chainBlock = (e) => e.chain ? `
+    <section class="block chain">
+      <h2>The chain</h2>
+      <p class="chain-text"><span class="chain-q">${esc(e.q.replace(/\.$/, ""))}</span>${e.chain.split(/\s*→\s*/).map((l) =>
+        `<span class="chain-arrow" aria-hidden="true">→</span><span class="chain-link">${esc(l)}</span>`).join("")}</p>
+    </section>` : "";
+  const chainPassages = (e) => [
+    ...(e.chain ? [{ label: "chain", text: e.chain, keys: keyTokens(e.atoms) }] : []),
+    ...(e.hook ? [{ label: "story", text: e.hook, keys: keyTokens(e.atoms) }] : [])
+  ];
   const storyBlock = (e) => e.hook ? `<section class="block story"><h2>The story</h2><p>${esc(e.hook)}</p></section>` : "";
 
   /* ---------- home ---------- */
@@ -853,10 +863,12 @@
         <h1 class="question">${esc(e.q)}</h1>
         <div class="actions">
           <a class="btn" href="#/learn/${e.id}">Learn it step by step</a>
+          <a class="btn ghost" href="#/type/${e.id}">Type the chain</a>
           <a class="btn ghost" href="#/recall/${e.id}">Recall it</a>
           <button class="btn ghost" data-act="cover" aria-pressed="false">Cover the answers</button>
         </div>
         ${drawBlock(e)}
+        ${chainBlock(e)}
         ${storyBlock(e)}
         <section class="points">
           <h2 class="points-title">What the essay must contain</h2>
@@ -875,10 +887,9 @@
     const secs = e.sections;
     const steps = ["warm", "draw", ...secs.map((_, i) => i), "whole"];
     const L = { step: 0, phase: "read", targets: null, recalled: {}, result: null };
-    const stepName = (s) => s === "warm" ? "Warm-up guess" : s === "draw" ? "The diagram"
+    const stepName = (s) => s === "warm" ? "Warm-up guess" : s === "draw" ? "The chain"
       : s === "whole" ? "The whole essay" : secs[s].h;
 
-    const drawText = (t) => String(t || "").replace(/^Professor’s[^:]{0,40}:\s*/, "").replace(/\s*Swap this for[^.]*\./, "");
     const render = () => {
       stopTicker();
       destroyET();
@@ -895,7 +906,7 @@
       const host = document.getElementById("etHost");
       if (host) {
         const passages = s === "draw"
-          ? [{ label: "story", text: e.hook, keys: keyTokens(e.atoms) }, { label: "diagram", text: drawText(e.draw), keys: keyTokens(e.atoms) }]
+          ? chainPassages(e)
           : [{ label: "points", head: secs[s].h, text: (L.targets || secs[s].atoms).map((a) => a.s).join(" "), keys: keyTokens(L.targets || secs[s].atoms) }];
         ET = mountEssayType(host, { passages, cue: { num: e.id, q: e.q }, onLastRound: () => nudgeNext(host) });
         window.scrollTo(0, Math.max(0, host.getBoundingClientRect().top + window.scrollY - 96));
@@ -925,16 +936,17 @@
           <p>Take a sheet of paper and draw the diagram without looking: metabolites, arrows, enzymes, cofactors. Then compare.</p>
           <div class="actions"><button class="btn" data-l="compare">Compare with the original</button></div>`;
         if (L.phase === "type") return `
-          <h2>Type the story</h2>
-          <p class="hint">Each round starts with the question, so the story is always chained to it. Copy first, then gaps, then first letters. Switch to <em>diagram</em> to type the pathway too.</p>
+          <h2>Type the chain</h2>
+          <p class="hint">The question, then the whole essay as one chain. Read each link as you type it: it says what happens and why. Copy first, then gaps, then first letters. The story is there too.</p>
           <div id="etHost"></div>
           <div class="actions">
             <button class="btn" data-l="hide" data-nudge>I’m ready: hide it and sketch</button>
             <button class="btn ghost" data-l="read">Back to reading</button>
           </div>`;
         return `
-          ${L.phase === "compare" ? `<p class="callout">Correct your sketch where it differs. If it was far off, read it once more and sketch again.</p>` : `<p>Read the diagram and the story for two minutes. Then type the story in EssayType, then hide everything and sketch the diagram on paper.</p>${timerHTML(120, "Reading time")}`}
+          ${L.phase === "compare" ? `<p class="callout">Correct your sketch where it differs. If it was far off, read it once more and sketch again.</p>` : `<p>Read the diagram, the chain and the story for three minutes. Follow the chain link by link and ask why each step leads to the next. Then type the chain in EssayType, then hide everything and sketch the diagram on paper.</p>${timerHTML(180, "Reading time")}`}
           ${drawBlock(e)}
+          ${L.phase === "compare" ? "" : chainBlock(e)}
           ${storyBlock(e)}
           <div class="actions">
             ${L.phase === "compare"
@@ -1036,6 +1048,25 @@
       render();
     };
     render();
+  };
+
+  /* ---------- type: EssayType on its own, for any essay ---------- */
+  const viewType = (e) => {
+    app.innerHTML = `
+      ${topbar()}
+      <main class="wrap learn type-page">
+        <p class="meta">EssayType, essay ${e.id}. Every round starts with the question, then the whole essay as one chain.</p>
+        <h1 class="question">${esc(e.q)}</h1>
+        <section class="stage">
+          <div id="etHost"></div>
+          <div class="actions">
+            <a class="btn" href="#/recall/${e.id}">Recall it from the question</a>
+            <a class="btn ghost" href="#/study/${e.id}">Open the notes</a>
+          </div>
+        </section>
+      </main>`;
+    const host = document.getElementById("etHost");
+    ET = mountEssayType(host, { passages: chainPassages(e), cue: { num: e.id, q: e.q } });
   };
 
   /* ---------- recall and exam ---------- */
@@ -1217,6 +1248,7 @@
       ${checklist}
       <div class="actions end">
         <a class="btn ghost" href="#/study/${e.id}">Open the notes</a>
+        <a class="btn ghost" href="#/type/${e.id}">Type the chain</a>
         <button class="btn ghost" data-act="draw">Draw another</button>
         <a class="btn" href="#/">Back to today</a>
       </div>`;
@@ -1280,13 +1312,13 @@
 
         <section class="block">
           <h2>EssayType</h2>
-          <p>The typing game inside Learn. Every round starts with you typing the question, then the section, then the content, so the content is always chained to the question it belongs to. The question stays pinned above the text in cyan the whole time. Three rounds, each harder than the last:</p>
+          <p>The typing game. Every essay has a <strong>chain</strong>: the whole essay as one sequence of links (“HCl denatures proteins → chief cells secrete pepsinogen → …”), in the order you draw and write it, with the reason for each step. Every round starts with you typing the question, then the chain, so the question becomes the first link. The question stays pinned above the text in cyan the whole time. Three rounds, each harder than the last:</p>
           <ol>
             <li><strong>Copy.</strong> Type the text exactly. It makes you read every word instead of skimming.</li>
             <li><strong>Gaps.</strong> Key terms disappear and you type them from memory. Recalled words turn yellow; missed ones show up in red.</li>
             <li><strong>First letters.</strong> Only first letters are left. You rebuild every word yourself.</li>
           </ol>
-          <p class="hint">Tab types an arrow. Typing fast isn’t the goal; getting the gaps right is. Copying alone is still just reading, so always finish with “hide and type them back”.</p>
+          <p class="hint">Tab types an arrow. Read each link as you type it and ask why it leads to the next: typing without thinking is just copying. You’ll find it in Learn, on every essay’s notes, and after every recall (“Type the chain”).</p>
         </section>
 
         <section class="block">
@@ -1313,6 +1345,7 @@
             <li><strong>The question is the cue.</strong> You always start from the exact exam wording, and in EssayType you type it before every round, so that wording is what launches the essay on the day.</li>
             <li><strong>Feedback and a second go.</strong> Finding the gap yourself, then trying again, fixes it better than just reading the answer.</li>
             <li><strong>Pictures and stories.</strong> The diagram and the story give each fact a hook.</li>
+            <li><strong>Reasons, not lists.</strong> Each link in a chain says why the next one happens. Asking “why?” at every step (elaborative interrogation) makes facts stick far better than memorising them blind.</li>
             <li><strong>Fading cues.</strong> EssayType removes help step by step (all text, then gaps, then first letters), so recall gets harder just as you get better.</li>
             <li><strong>Honest confidence.</strong> Rating how sure you feel shows which essays only feel familiar.</li>
           </ul>
@@ -1581,6 +1614,7 @@
     window.scrollTo(0, 0);
     if (view === "study" && e) return viewStudy(e);
     if (view === "learn" && e) return viewLearn(e);
+    if (view === "type" && e) return viewType(e);
     if (view === "recall" && e) return viewRecall(e, "practice");
     if (view === "exam" && e) return viewRecall(e, "exam");
     if (view === "exam") return viewExamStart();
