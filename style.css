@@ -196,6 +196,10 @@ h3 { font: 600 0.95rem/1.3 var(--sans); color: var(--muted); margin: 1.75rem 0 0
 .draw-first { border-left: 4px solid var(--blue); }
 .draw-first img { display: block; margin: 0.5rem 0 0.75rem; border-radius: var(--r-sm); border: 1px solid var(--line); }
 .story p { font: italic 400 1.06rem/1.65 var(--serif); }
+.chain { border-left: 4px solid var(--blue); }
+.chain-text { margin: 0.35rem 0 0; font: 400 1.04rem/1.95 var(--serif); max-width: 54em; }
+.chain-q { font-weight: 600; color: var(--blue); }
+.chain-arrow { margin: 0 0.45em; color: var(--blue); font: 600 1rem/1 var(--sans); }
 
 .points-title { font-size: 1.25rem; margin-top: 2.5rem; }
 .sec h3 { color: var(--blue); font-size: 1rem; }
