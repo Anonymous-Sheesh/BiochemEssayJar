@@ -647,7 +647,7 @@
             B("Regulation: CPS II activated by PRPP, inhibited by UTP and purine nucleotides; UTP/CTP feed back on ATCase.", "utp|ctp", "L51 s14")
           ),
           S("Orotic aciduria",
-            P("Type I: deficiency of both orotate phosphoribosyltransferase and OMP decarboxylase; type II: OMP decarboxylase only.", "orotic aciduria; type", "L51 s22"),
+            P("Orotic aciduria type I: deficiency of both orotate phosphoribosyltransferase and OMP decarboxylase; type II: OMP decarboxylase only.", "orotic aciduria; type", "L51 s22"),
             P("Orotic acid accumulates and is excreted in urine; no UMP → retarded growth, severe anemia, leukopenia.", "anemia|anaemia; leukopenia|growth", "L51 s22"),
             P("Therapy: oral uridine and/or cytidine → UMP via nucleoside kinases (salvage bypasses the block).", "uridine|cytidine", "L51 s22")
           ),
