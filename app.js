@@ -1684,7 +1684,7 @@
   const essayStars = (id) => ["build", "gaps", "boss"].reduce((s, g) => s + ((S.play[id] && S.play[id][g] && S.play[id][g].stars) || 0), 0);
 
   const GAMES = [
-    { id: "build", name: "Build the chain", what: "The chain grows one link at a time. Pick the right next link out of three. You learn the order by playing it, no reading first.", time: "about 2 minutes" },
+    { id: "build", name: "Build the chain", what: "Say each next step in your own words before you see any options. Recalled steps are critical hits. Stuck? You get three jumbled-keyword options instead.", time: "about 4 minutes" },
     { id: "gaps", name: "Gap rush", what: "90 seconds against the clock. Type the missing key term in each link. Streaks multiply your points.", time: "90 seconds" },
     { id: "boss", name: "Boss fight", what: "Write the essay from the question alone. Every point you remember hits the boss, live, as you type.", time: "about 5 minutes" }
   ];
@@ -1768,16 +1768,57 @@
   };
 
   // ---- 1. Build the chain ----
+  // Each link: say it first (type key words), and only then see options.
+  // Options show jumbled key terms, not the sentence, so you can't recognise wording.
+  const CALL_STOP = new Set(["about", "each", "only", "than", "that", "them", "they", "with", "from", "into", "over",
+    "using", "uses", "used", "make", "made", "makes", "gets", "have", "has", "does", "their", "this", "these", "those",
+    "such", "like", "both", "more", "less", "then", "when", "which", "what", "goes", "comes", "work", "works", "best",
+    "keep", "keeps", "send", "sends", "small", "short", "whole", "last", "first", "also", "there", "where", "here",
+    "most", "some", "very", "just", "body", "bits", "part", "parts", "turns", "turned", "becomes", "become", "called",
+    "gives", "give", "takes", "take", "come", "out", "for", "and", "the", "are", "its", "via", "not", "all", "can"]);
+  const keyWordsOf = (link) => {
+    const seen = new Set(), out = [];
+    link.split(/\s+/).forEach((raw, pos) => {
+      const w = raw.replace(/^[(\[“"']+|[)\],.;:!?”"']+$/g, "");
+      const c = clean(w).split(" ").filter(Boolean);
+      if (!c.length) return;
+      if (!c.some((t) => (t.length >= 4 || /\d/.test(t)) && !CALL_STOP.has(t))) return;
+      const k = c.join(" ");
+      if (seen.has(k)) return;
+      seen.add(k); out.push({ raw: w, pos, brk: /[,;:]$/.test(raw), toks: c.filter((t) => (t.length >= 4 || /\d/.test(t)) && !CALL_STOP.has(t)) });
+    });
+    return out;
+  };
+  const typedHits = (typed, keys) => {
+    const T = clean(typed).split(" ").filter(Boolean);
+    return keys.filter((k) => k.toks.some((a) => T.some((w) => wordMatch(w, a) || (w.length >= 4 && a.startsWith(w)) || (/\d/.test(a) && w === a))));
+  };
   const viewBuild = (e) => {
     const links = chainLinks(e);
     const r = rng(`${e.id}:${Date.now()}`);
     const others = C.essays.filter((x) => x.id !== e.id).flatMap((x) => chainLinks(x));
-    const st = { i: 0, combo: 0, best: 0, score: 0, miss: 0, lock: false, missed: [], opts: [] };
+    const qt = qToks(e);
+    const st = { i: 0, combo: 0, best: 0, score: 0, miss: 0, lock: false, missed: [], opts: [], phase: "call", recalled: 0, callable: 0, got: [] };
     app.innerHTML = gameShell(e,
       `<span class="g-stat"><b class="g-score">0</b> pts</span><span class="g-stat g-combo"></span>`,
-      `<span><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> pick</span><span>streaks of 5 throw fireballs, 10 call lightning</span>`);
+      `<span class="b-keys-call"><kbd>enter</kbd> check <kbd>tab</kbd> I'm stuck</span><span class="b-keys-pick" hidden><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> pick</span><span>say it before you see it: recalled steps are critical hits</span>`);
     const stage = app.querySelector(".g-stage"), bar = app.querySelector(".g-bar i");
     const arena = window.mountArena(app.querySelector(".g-arena"), e.id, {});
+    // Key words you must produce: skip words given away by the question or the link just above.
+    const callKeys = (i) => {
+      const prev = new Set(toks(links[i - 1] || ""));
+      const ks = keyWordsOf(links[i]).map((k) => ({ ...k, toks: k.toks.filter((t) => !prev.has(t) && !qt.has(t)) })).filter((k) => k.toks.length);
+      // words next to each other ("released amino acids") count as one idea
+      let g = -1, last = -9;
+      let brk = false;
+      ks.forEach((k) => { if (k.pos !== last + 1 || brk) g++; k.idea = g; last = k.pos; brk = k.brk; });
+      return ks;
+    };
+    const ideaCount = (ks) => new Set(ks.map((k) => k.idea)).size;
+    const jumble = (link) => {
+      const kw = keyWordsOf(link).map((k) => k.raw);
+      return (kw.length ? shuffle(kw, r) : [link]).join("  ·  ");
+    };
     const options = (i) => {
       const right = links[i];
       const near = links.slice(i + 1, i + 6).filter((l) => l !== right);
@@ -1785,78 +1826,134 @@
       const d1 = near.length ? near[Math.floor(r() * near.length)] : far[Math.floor(r() * far.length)];
       const pool = others.filter((l) => l !== right && l !== d1);
       const d2 = pool[Math.floor(r() * pool.length)];
-      return shuffle([right, d1, d2].filter(Boolean), r);
+      return shuffle([right, d1, d2].filter(Boolean), r).map((l) => ({ link: l, show: jumble(l) }));
     };
     const hud = () => {
       app.querySelector(".g-score").textContent = st.score;
       app.querySelector(".g-combo").textContent = st.combo >= 2 ? `streak ×${Math.min(st.combo, 10)}` : "";
       bar.style.width = `${(100 * st.i) / links.length}%`;
+      const call = st.phase === "call";
+      app.querySelector(".b-keys-call").hidden = !call;
+      app.querySelector(".b-keys-pick").hidden = call;
     };
     const render = () => {
       const done = links.slice(0, st.i), shown = done.slice(-3);
+      const call = st.phase === "call";
       stage.innerHTML = `
         <div class="b-chain">
           ${done.length > 3 ? `<p class="b-more">${done.length - 3} links above</p>` : `<p class="b-link b-q">${esc(e.q.replace(/\.$/, ""))}</p>`}
           ${shown.map((l, k) => `${done.length > 3 && k === 0 ? "" : `<span class="b-arrow" aria-hidden="true">↓</span>`}<p class="b-link${k === shown.length - 1 ? " last" : ""}">${esc(l)}</p>`).join("")}
           <span class="b-arrow" aria-hidden="true">↓</span>
-          <p class="b-slot">What comes next? <span>${st.i + 1} of ${links.length}</span></p>
+          <p class="b-slot">${call ? "Say the next step in your own words" : "Which idea comes next?"} <span>${st.i + 1} of ${links.length}</span></p>
         </div>
-        <div class="b-cards">${st.opts.map((o, k) => `<button type="button" class="b-card" data-pick="${k}"><span class="b-key">${k + 1}</span><span>${esc(o)}</span></button>`).join("")}</div>`;
+        ${call ? `
+        <form class="b-call" autocomplete="off">
+          <input class="b-in" type="text" placeholder="key words, any order, e.g. lysosome pH 5" aria-label="Next step in your own words" autocapitalize="off" spellcheck="false">
+          <button type="submit" class="g-btn main">Check</button>
+          <button type="button" class="g-btn" data-stuck>I'm stuck</button>
+        </form>
+        ${st.got.length ? `<p class="b-near">You had: ${st.got.map((g) => `<mark>${esc(g)}</mark>`).join(" ")}. One more key idea.</p>` : ""}` : `
+        <div class="b-cards">${st.opts.map((o, k) => `<button type="button" class="b-card" data-pick="${k}"><span class="b-key">${k + 1}</span><span>${esc(o.show)}</span></button>`).join("")}</div>`}`;
+      const inp = stage.querySelector(".b-in");
+      if (inp) inp.focus({ preventScroll: true });
     };
-    const advance = () => {
-      if (!stage.isConnected) return;
-      st.i++; st.lock = false;
-      if (st.i >= links.length) return end();
+    const startLink = () => {
+      st.lock = false; st.got = []; st.tries = 0;
+      st.keys = callKeys(st.i);
+      st.phase = st.keys.length ? "call" : "pick";
+      if (st.phase === "call") st.callable++;
       st.opts = options(st.i);
       render(); hud();
     };
+    const advance = () => {
+      if (!stage.isConnected) return;
+      st.i++;
+      if (st.i >= links.length) return end();
+      startLink();
+    };
+    const toPick = () => { st.phase = "pick"; render(); hud(); };
+    const showFull = (cls) => {
+      const slot = stage.querySelector(".b-slot");
+      if (slot) { slot.className = "b-link b-reveal " + cls; slot.textContent = links[st.i]; }
+    };
+    const check = (typed) => {
+      if (st.lock) return;
+      if (!typed.trim()) return toPick();
+      const hits = typedHits(typed, st.keys);
+      const need = Math.min(2, ideaCount(st.keys));
+      if (ideaCount(hits) >= need) {
+        st.lock = true;
+        st.combo++; st.best = Math.max(st.best, st.combo); st.recalled++;
+        const pts = 20 * Math.min(st.combo, 10);
+        st.score += pts;
+        arena.attack(st.combo >= 5 ? attackKind(st.combo) : "fireball", "crit +" + pts);
+        blip("good");
+        stage.querySelector(".b-call").remove();
+        const nr = stage.querySelector(".b-near"); if (nr) nr.remove();
+        showFull("good");
+        hud();
+        setTimeout(advance, 1300);
+      } else {
+        st.tries++;
+        st.got = [...new Set([...st.got, ...hits.map((h) => h.raw)])];
+        if (st.tries >= 2 || !hits.length) { blip("bad"); return toPick(); }
+        render();
+      }
+    };
     const pick = (k) => {
-      if (st.lock || !st.opts[k]) return;
+      if (st.phase !== "pick" || st.lock || !st.opts[k]) return;
       st.lock = true;
       const right = links[st.i], btns = [...stage.querySelectorAll(".b-card")];
-      if (st.opts[k] === right) {
+      const ri = st.opts.findIndex((o) => o.link === right);
+      if (k === ri) {
         st.combo++; st.best = Math.max(st.best, st.combo);
-        const pts = 10 * Math.min(st.combo, 10);
+        const pts = 5 * Math.min(st.combo, 10);
         st.score += pts;
         btns[k].classList.add("right");
         arena.attack(attackKind(st.combo), "+" + pts);
         blip("good");
-        hud();
-        setTimeout(advance, 420);
       } else {
         st.combo = 0; st.miss++;
         st.missed.push(right);
         btns[k].classList.add("wrong");
-        btns[st.opts.indexOf(right)].classList.add("right", "reveal");
+        btns[ri].classList.add("right", "reveal");
         arena.taunt();
         blip("bad");
-        hud();
-        setTimeout(advance, 1400);
       }
+      if (st.keys.length) st.missed.push(right);
+      showFull(k === ri ? "ok" : "bad");
+      hud();
+      setTimeout(advance, k === ri ? 1500 : 2200);
     };
     const end = () => {
       stopGame();
       bar.style.width = "100%";
-      const n = links.length;
-      const stars = st.miss <= 1 ? 3 : st.miss <= Math.ceil(n * 0.15) ? 2 : 1;
+      const n = links.length, rate = st.callable ? st.recalled / st.callable : 1;
+      const stars = st.miss <= 1 && rate >= 0.6 ? 3 : st.miss <= Math.ceil(n * 0.15) ? 2 : 1;
       const prev = setStars(e.id, "build", stars, st.score);
       addXP(st.score / 10);
       logEvent("build", e.id, stars);
       arena.taunt(stars === 3 ? "Grr... you know my chain. Face me in the boss fight!" : null);
       blip("win");
       stage.innerHTML = resultsHTML({
-        id: e.id, title: st.miss ? "Chain built" : "Perfect chain", stars, prevStars: prev.stars,
-        stats: [["score", st.score], ["best streak", "×" + st.best], ["mistakes", st.miss], ["xp", "+" + Math.round(st.score / 10)]],
-        note: stars === 3 ? "You know the order. Now take the words away." : "Play it again until it’s 3 stars, or move on and come back.",
+        id: e.id, title: rate >= 0.9 && !st.miss ? "Perfect chain" : "Chain built", stars, prevStars: prev.stars,
+        stats: [["recalled", `${st.recalled} of ${st.callable}`], ["score", st.score], ["best streak", "×" + st.best], ["wrong picks", st.miss]],
+        note: stars === 3 ? "You said most of it before seeing it. That's real recall." : "3 stars needs 60% said from memory. The steps below are the ones you couldn't say yet.",
         missed: [...new Set(st.missed)].map((m) => esc(m)),
         next: { href: `#/game/gaps/${e.id}`, label: "Next: Gap rush" }
       });
       const n1 = stage.querySelector(".g-btn.main"); if (n1) n1.focus({ preventScroll: true });
     };
-    app.onclick = gameClicks(e, (ev) => { const c = ev.target.closest("[data-pick]"); if (c) pick(Number(c.dataset.pick)); });
-    gameKey = (ev) => { if (["1", "2", "3"].includes(ev.key)) { ev.preventDefault(); pick(Number(ev.key) - 1); } };
-    st.opts = options(0);
-    render(); hud();
+    app.onclick = gameClicks(e, (ev) => {
+      if (ev.target.closest("[data-stuck]")) return toPick();
+      const c = ev.target.closest("[data-pick]"); if (c) pick(Number(c.dataset.pick));
+    });
+    app.onsubmit = (ev) => { if (ev.target.closest(".b-call")) { ev.preventDefault(); check(stage.querySelector(".b-in").value); } };
+    gameKey = (ev) => {
+      if (st.phase === "call") { if (ev.key === "Tab") { ev.preventDefault(); toPick(); } return; }
+      if (["1", "2", "3"].includes(ev.key)) { ev.preventDefault(); pick(Number(ev.key) - 1); }
+    };
+    startLink();
   };
 
   // ---- 2. Gap rush ----
@@ -2303,7 +2400,7 @@
           <h2>A new essay: press Play</h2>
           <p>Three short games, easiest first. No reading the chain first: you learn it by playing it.</p>
           <ol>
-            <li><strong>Build the chain</strong> (about 2 minutes): the chain grows one link at a time; pick the right next link out of three. Guessing wrong is fine: the right link lights up and you remember it better for having guessed.</li>
+            <li><strong>Build the chain</strong> (about 2 minutes): the chain grows one link at a time. Type the next step in a few key words of your own before any options appear; only if you are stuck do you get three options, shown as jumbled key terms so you have to think about the idea instead of recognising a sentence. Guessing wrong is fine: the full step lights up and you remember it better for having tried.</li>
             <li><strong>Gap rush</strong> (90 seconds): type the missing key term in each link, against the clock. Streaks multiply your points.</li>
             <li><strong>Boss fight</strong> (6 minutes): write the essay from the question. Every point you remember hits the boss, live, as you type.</li>
           </ol>
