@@ -138,6 +138,8 @@
     s.quiz = s.quiz || {};
     s.quiz.days = s.quiz.days || {};
     s.quiz.last = s.quiz.last || {};
+    s.play = s.play || {};
+    s.xp = s.xp || 0;
     return s;
   };
   const fresh = () => norm({ v: 1, start: today(), exam: C.examDate, att: {}, due: {} });
@@ -170,9 +172,151 @@
     store.del(LEGACY_KEY);
   })();
 
-  let user = users.find((u) => u.id === store.get(CUR_KEY)) || null;
+  /* ---------- online accounts ----------
+     With an API address in config.js, accounts live in the owner's Google Sheet: name + password,
+     progress saved online. Without it, users are profiles on this device (as before). */
+  const API = String(window.ESSAYJAR_API || "").trim();
+  const ONLINE = /^https:\/\//.test(API);
+  const OWNER = String(window.ESSAYJAR_OWNER || "the site owner");
+  const ACCT_KEY = "essayjar:acct";
+  const GUEST_KEY = "essayjar:guest";
+  const dirtyKey = (id) => "essayjar:dirty:" + id;
+  const session = {
+    get: (k) => { try { return sessionStorage.getItem(k); } catch (e) { return null; } },
+    set: (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) { /* ignore */ } },
+    del: (k) => { try { sessionStorage.removeItem(k); } catch (e) { /* ignore */ } }
+  };
+  let acct = null;
+  if (ONLINE) { try { acct = JSON.parse(store.get(ACCT_KEY)); if (!acct || !acct.token || !acct.id) acct = null; } catch (e) { acct = null; } }
+  const acctUser = (a) => ({ id: "acct-" + a.id, name: a.name, online: true, admin: !!a.admin });
+  const apiCall = (action, body, keepalive) => fetch(API, {
+    method: "POST", body: JSON.stringify(Object.assign({ action }, body || {})), keepalive: !!keepalive
+  }).then((r) => r.json());
+  const anyProgress = (s) => !!(s && (Object.keys(s.att || {}).length || Object.keys(s.learned || {}).length ||
+    Object.keys(s.play || {}).length || Object.keys((s.quiz || {}).days || {}).length || s.xp));
+
+  let user = ONLINE ? (acct ? acctUser(acct) : null) : (users.find((u) => u.id === store.get(CUR_KEY)) || null);
   let S = user ? loadState(user.id) : fresh();
-  const save = () => { if (user) store.set(keyFor(user.id), JSON.stringify(S)); };
+
+  let syncT = null, syncAt = 0, syncing = false, syncState = "saved";
+  const setSync = (st) => { syncState = st; const el = document.querySelector(".who"); if (el) el.dataset.sync = st; };
+  const queueSync = (delay) => {
+    if (!user || !user.online || !acct) return;
+    const at = Date.now() + delay;
+    if (syncT && syncAt <= at) return;
+    clearTimeout(syncT);
+    syncAt = at;
+    syncT = setTimeout(() => { syncT = null; syncNow(false); }, delay);
+  };
+  const syncNow = (keepalive) => {
+    if (!user || !user.online || !acct || syncing || store.get(dirtyKey(user.id)) !== "1") return Promise.resolve();
+    syncing = true;
+    setSync("saving");
+    const stamp = S.updatedAt, uid = user.id;
+    return apiCall("save", { token: acct.token, data: S }, keepalive).then((r) => {
+      if (r && r.ok) { if (user && user.id === uid && S.updatedAt === stamp) store.del(dirtyKey(uid)); setSync("saved"); }
+      else if (r && /log in/i.test(r.error || "")) sessionEnded();
+      else setSync("offline");
+    }).catch(() => setSync("offline")).then(() => {
+      syncing = false;
+      if (user && user.online && store.get(dirtyKey(user.id)) === "1") queueSync(15000);
+    });
+  };
+  const save = () => {
+    S.updatedAt = Date.now();
+    if (!user) return;
+    store.set(keyFor(user.id), JSON.stringify(S));
+    if (user.online) { store.set(dirtyKey(user.id), "1"); queueSync(2500); }
+  };
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") syncNow(true); });
+
+  // Decide which copy wins after login or reload: unsynced newer local work, then the server, then guest/device progress.
+  const reconcile = (r, guestS) => {
+    const uid = "acct-" + r.user.id;
+    let cached = null;
+    try { const c = JSON.parse(store.get(keyFor(uid))); if (valid(c)) cached = norm(c); } catch (e) { cached = null; }
+    const dirty = store.get(dirtyKey(uid)) === "1";
+    let push = false, from = "server";
+    if (cached && dirty && (cached.updatedAt || 0) > (r.updated || 0)) { S = cached; push = true; from = "device"; }
+    else if (r.data && valid(r.data)) S = norm(r.data);
+    else {
+      const local = !guestS && users.find((u) => u.name.toLowerCase() === r.user.name.toLowerCase());
+      const ls = local ? loadState(local.id) : null;
+      if (guestS && anyProgress(guestS)) { S = guestS; from = "guest"; }
+      else if (ls && anyProgress(ls)) { S = ls; from = "device"; }
+      else S = fresh();
+      push = true;
+    }
+    store.set(keyFor(uid), JSON.stringify(S));
+    if (push) { store.set(dirtyKey(uid), "1"); queueSync(400); }
+    return from;
+  };
+  const startSession = (r, guestS) => {
+    acct = { token: r.token, id: r.user.id, name: r.user.name, admin: !!r.user.admin };
+    store.set(ACCT_KEY, JSON.stringify(acct));
+    session.del(GUEST_KEY);
+    user = acctUser(acct);
+    return reconcile(r, guestS);
+  };
+  let loginMsg = "";
+  const sessionEnded = () => {
+    acct = null; user = null; S = fresh();
+    store.del(ACCT_KEY);
+    loginMsg = "Your session ended. Log in again.";
+    location.hash = "#/login";
+  };
+  const logout = () => {
+    const a = acct, u = user;
+    const done = () => {
+      if (u && store.get(dirtyKey(u.id)) !== "1") store.del(keyFor(u.id));
+      acct = null; user = null; S = fresh();
+      store.del(ACCT_KEY);
+      session.del(GUEST_KEY);
+      location.hash = "#/login";
+    };
+    syncNow(false).then(() => { if (a) apiCall("logout", { token: a.token }).catch(() => {}); done(); }, done);
+  };
+  const bootSync = () => {
+    if (!ONLINE || !acct) return;
+    apiCall("me", { token: acct.token }).then((r) => {
+      if (r && r.ok) {
+        acct.admin = !!r.user.admin; acct.name = r.user.name;
+        store.set(ACCT_KEY, JSON.stringify(acct));
+        user = acctUser(acct);
+        const before = JSON.stringify(S);
+        reconcile(r, null);
+        setSync("saved");
+        const v = location.hash.replace(/^#\/?/, "").split("/")[0];
+        if (JSON.stringify(S) !== before && ["", "play", "study", "board", "admin", "account", "how", "settings"].includes(v)) route();
+      } else if (r && /log in/i.test(r.error || "")) sessionEnded();
+    }).catch(() => setSync("offline"));
+  };
+
+  // Study time: counted while the page is visible and you've touched it in the last 90 seconds.
+  const dayLog = () => { const t = today(); S.log = S.log || {}; return (S.log[t] = S.log[t] || { secs: 0, xp: 0, ev: [] }); };
+  const trimLog = () => {
+    const t = today();
+    Object.keys(S.log || {}).forEach((k) => { const age = diff(k, t); if (age > 60) delete S.log[k]; else if (age > 7) delete S.log[k].ev; });
+  };
+  const logEvent = (k, id, v) => {
+    const d = dayLog();
+    d.ev = d.ev || [];
+    d.ev.push({ t: Date.now(), k, id: id || 0, v: v == null ? "" : v });
+    if (d.ev.length > 30) d.ev.splice(0, d.ev.length - 30);
+    trimLog();
+    save();
+  };
+  let lastInput = Date.now();
+  ["pointerdown", "keydown", "wheel", "touchstart", "input"].forEach((t) => document.addEventListener(t, () => { lastInput = Date.now(); }, { passive: true, capture: true }));
+  setInterval(() => {
+    if (document.visibilityState !== "visible" || Date.now() - lastInput > 90000) return;
+    const d = dayLog();
+    d.secs = (d.secs || 0) + 15;
+    if (!user) return;
+    S.updatedAt = Date.now();
+    store.set(keyFor(user.id), JSON.stringify(S));
+    if (user.online) { store.set(dirtyKey(user.id), "1"); queueSync(60000); }
+  }, 15000);
   const switchTo = (u) => {
     user = u || null;
     if (user) store.set(CUR_KEY, user.id); else store.del(CUR_KEY);
@@ -711,21 +855,23 @@
       <a class="brand" href="#/">Essay Jar</a>
       <nav>
         <a href="#/">Today</a>
+        ${ONLINE && user ? `<a href="#/board">Leaderboard</a>` : ""}
+        ${user && user.admin ? `<a href="#/admin">Admin</a>` : ""}
         <a href="#/how">How to study</a>
         <a href="#/settings">Settings</a>
-        <a class="who${user ? "" : " guest"}" href="#/users" title="Switch or create a user">${user ? esc(user.name) : "Guest"}</a>
+        <a class="who${user ? "" : " guest"}" data-sync="${syncState}" href="${ONLINE ? (user ? "#/account" : "#/login") : "#/users"}" title="${ONLINE ? (user ? "Your account" : "Log in") : "Switch or create a user"}">${user ? esc(user.name) : ONLINE ? "Log in" : "Guest"}</a>
       </nav>
     </header>`;
 
   const footer = () => `
     <footer class="foot">
-      <p>Made by Ibad Siddiqui. Progress is saved per user in this browser only; back it up from Settings now and then.</p>
+      <p>Made by Ibad Siddiqui. ${ONLINE ? "Progress saves to your account." : "Progress is saved per user in this browser only; back it up from Settings now and then."}</p>
     </footer>`;
 
   const guestNotice = () => user ? "" : `
     <div class="notice">
-      <p><strong>You’re studying as a guest, so nothing is saved.</strong> Create a user to keep your progress on this device.</p>
-      <a class="btn small" href="#/users">Create a user</a>
+      <p><strong>You’re playing as a guest, so nothing is saved.</strong> ${ONLINE ? "Log in or create an account to keep your progress." : "Create a user to keep your progress on this device."}</p>
+      <a class="btn small" href="${ONLINE ? "#/login" : "#/users"}">${ONLINE ? "Log in" : "Create a user"}</a>
     </div>`;
 
   const tally = (id) => {
@@ -742,7 +888,7 @@
           <span class="qtext">${esc(e.q)}</span>
         </a>
         <span class="row-side">
-          ${actions || `<span class="state">${tally(e.id)}<span class="label">${LABEL[st]}</span></span>`}
+          ${actions || `<span class="state">${essayStars(e.id) ? `<span class="mini-stars" title="${essayStars(e.id)} of 9 stars">★ ${essayStars(e.id)}</span>` : ""}${tally(e.id)}<span class="label">${LABEL[st]}</span></span>`}
         </span>
       </li>`;
   };
@@ -817,8 +963,8 @@
     else if (left > 0) phase = "Every essay has been introduced. From now on it’s jar draws and mock exams.";
 
     const items = [
-      ...reviews.map((e) => row(e, `<span class="tag">Review</span><a class="btn small" href="#/recall/${e.id}">Recall</a>`)),
-      ...fresh.map((e) => row(e, `<span class="tag">New</span><button class="btn small ghost" data-learned="${e.id}" title="Learned it outside the app? Adds it to your daily review.">Already learned</button><a class="btn small" href="#/learn/${e.id}">Learn</a>`))
+      ...reviews.map((e) => row(e, `<span class="tag">Review</span><a class="btn small" href="#/recall/${e.id}">Boss fight</a>`)),
+      ...fresh.map((e) => row(e, `<span class="tag">New</span><button class="btn small ghost" data-learned="${e.id}" title="Learned it outside the app? Adds it to your daily review.">Already learned</button><a class="btn small" href="#/play/${e.id}">Play</a>`))
     ];
 
     const groups = {};
@@ -828,15 +974,18 @@
       ${topbar()}
       <main class="wrap">
         ${guestNotice()}
+        ${(() => { const m = loginMsg; loginMsg = ""; return m ? `<p class="callout">${esc(m)}</p>` : ""; })()}
         <section class="hero">
           <div class="hero-text">
             <h1>${esc(C.title)}</h1>
             <p class="sub">${esc(C.subtitle)}</p>
             <p class="lede">${esc(when)} ${esc(phase)}</p>
             <p class="counts">In the jar: ${esc(countText)}.</p>
+            ${(() => { const L = levelOf(S.xp); return `<p class="xp"><span class="xp-lvl">Level ${L.lvl}</span><span class="xp-bar" aria-hidden="true"><i style="width:${Math.round((100 * L.into) / L.need)}%"></i></span><span class="xp-n">${L.into} / ${L.need} XP</span></p>`; })()}
+            <p class="hero-stats"><span><b>${C.essays.filter((e) => isDown(e.id)).length}</b> of ${C.essays.length} bosses defeated</span><span><b>${mins((S.log && S.log[today()] && S.log[today()].secs) || 0)}</b> studied today</span></p>
             <div class="actions">
               <button class="btn" data-act="draw">Draw from the jar</button>
-              <a class="btn ghost" href="#/exam">Mock exam, ${C.examMinutes} minutes</a>
+              <a class="btn ghost" href="#/exam">Final boss: mock exam</a>
             </div>
           </div>
           <button class="jar-btn" data-act="draw" aria-label="Draw an essay from the jar">${jarSVG()}</button>
@@ -847,15 +996,18 @@
         <section class="panel today">
           <h2>Today</h2>
           ${items.length
-            ? `<p class="hint">New essays: press Learn and follow the steps. Reviews: recall straight from the question, no peeking first.</p><ul class="rows">${items.join("")}</ul>`
+            ? `<p class="hint">New essays: press Play, three short games. Reviews: a boss fight straight from the question, no peeking first.</p><ul class="rows">${items.join("")}</ul>`
             : `<p class="empty">Nothing is due today. Draw from the jar, or run a mock exam.</p>`}
         </section>
 
-        <section class="all">
-          <h2>All ${C.essays.length} essays</h2>
+        <section class="roster">
+          <div class="roster-head">
+            <h2>The ${C.essays.length} bosses</h2>
+            <p>${C.essays.filter((e) => isDown(e.id)).length} of ${C.essays.length} defeated</p>
+          </div>
           ${Object.keys(groups).map((l) => `
             <h3>${esc(lectureName(l))}</h3>
-            <ul class="rows">${groups[l].map((e) => row(e)).join("")}</ul>`).join("")}
+            <ul class="bosses">${groups[l].map(bossCard).join("")}</ul>`).join("")}
         </section>
       </main>
       ${footer()}`;
@@ -871,7 +1023,8 @@
         <p class="meta">Essay ${e.id}, from ${esc(lectureName(e.lecture))}.${plan} Status: ${LABEL[st]}.</p>
         <h1 class="question">${esc(e.q)}</h1>
         <div class="actions">
-          <a class="btn" href="#/learn/${e.id}">Learn it step by step</a>
+          <a class="btn" href="#/play/${e.id}">Play</a>
+          <a class="btn ghost" href="#/learn/${e.id}">Learn it step by step</a>
           <a class="btn ghost" href="#/type/${e.id}">Type the chain</a>
           <a class="btn ghost" href="#/recall/${e.id}">Recall it</a>
           <button class="btn ghost" data-act="cover" aria-pressed="false">Cover the answers</button>
@@ -906,7 +1059,7 @@
       stopTicker();
       destroyET();
       const s = steps[L.step];
-      if (s === "whole" && !S.learned[e.id]) markLearned(e.id, false);
+      if (s === "whole" && !S.learned[e.id]) { markLearned(e.id, false); logEvent("learn", e.id); }
       app.innerHTML = `
         ${topbar()}
         <main class="wrap learn">
@@ -1144,19 +1297,31 @@
       regrade() { return counted.filter((a) => this.rows.find((r) => r.atom === a).got).length / counted.length >= 0.7; }
     };
   };
+  const gapWords = (link, keys, qt, ctx) => {
+    const words = link.split(/\s+/), out = [];
+    words.forEach((w, wi) => {
+      const core = wordCore(w), ct = toks(core);
+      if (!ct.length || /^(I|II|III|IV|V|VI)$/.test(core) || core.replace(/[^a-z]/gi, "").length < 4) return;
+      if (!isKeyWord(core, keys)) return;
+      if (ct.some((t) => qt.has(t) || ctx.has(t))) return;
+      if (words.filter((x, i) => i !== wi && toks(wordCore(x)).join() === ct.join()).length) return;
+      out.push({ wi, core });
+    });
+    return out;
+  };
+  const gapGrade = (answer, core) => {
+    const need = toks(core).filter((t) => (t.length >= 2 || /\d/.test(t)) && !GREEK_NAMES.has(t));
+    const have = toks(answer);
+    if (!need.length) return false;
+    if (have.join("") === toks(core).join("")) return true;
+    return need.every((t) => hasTok(have, t));
+  };
   const mkGap = (e, r) => {
     const links = chainLinks(e), keys = keyTokens(e.atoms), qt = qToks(e);
     const cands = [];
     links.forEach((link, li) => {
       const ctx = new Set([...toks(links[li - 1] || ""), ...toks(links[li + 1] || "")]);
-      link.split(/\s+/).forEach((w, wi) => {
-        const core = wordCore(w), ct = toks(core);
-        if (!ct.length || /^(I|II|III|IV|V|VI)$/.test(core) || core.replace(/[^a-z]/gi, "").length < 4) return;
-        if (!isKeyWord(core, keys)) return;
-        if (ct.some((t) => qt.has(t) || ctx.has(t))) return;
-        if (link.split(/\s+/).filter((x, i) => i !== wi && toks(wordCore(x)).join() === ct.join()).length) return;
-        cands.push({ li, wi, core });
-      });
+      gapWords(link, keys, qt, ctx).forEach((g) => cands.push({ li, ...g }));
     });
     if (!cands.length) return null;
     const c = cands[Math.floor(r() * cands.length)];
@@ -1172,13 +1337,7 @@
       context: { before: links[c.li - 1] || null, after: links[c.li + 1] || null },
       html: shown(() => `<span class="blank" aria-label="gap"></span>`),
       reveal: (ok) => shown((core) => `<mark class="${ok ? "yes" : "no"}">${esc(core)}</mark>`),
-      grade(answer) {
-        const need = toks(c.core).filter((t) => (t.length >= 2 || /\d/.test(t)) && !GREEK_NAMES.has(t));
-        const have = toks(answer);
-        if (!need.length) return false;
-        if (have.join("") === toks(c.core).join("")) return true;
-        return need.every((t) => hasTok(have, t));
-      }
+      grade(answer) { return gapGrade(answer, c.core); }
     };
   };
   const linkTargets = (link, keys) => {
@@ -1260,12 +1419,7 @@
     }
     return [...shuffle(first, r), ...mixed];
   };
-  const streak = () => {
-    let n = 0, d = today();
-    if (!(S.quiz.days[d] && S.quiz.days[d].done)) d = addDays(d, -1);
-    while (S.quiz.days[d] && S.quiz.days[d].done) { n++; d = addDays(d, -1); }
-    return n;
-  };
+  const streak = () => streakOf(S, today());
   const minutes = (items) => Math.max(1, Math.round(items.reduce((s, it) => s + it.secs, 0) / 60));
   const essayList = (ids) => ids.map((id) => "Q" + id).join(", ");
 
@@ -1424,14 +1578,16 @@
       rec.done = true; rec.n += items.length; rec.first += firstOK;
       rec.essays = [...new Set([...rec.essays, ...Object.keys(per).map(Number)])];
       S.quiz.days[t] = rec;
-      save();
+      S.xp = (S.xp || 0) + firstOK * 10;
+      dayLog().xp = (dayLog().xp || 0) + firstOK * 10;
+      logEvent("daily", 0, `${firstOK}/${items.length}`);
       const st = streak();
       const left = reviewPool().filter((e) => !rec.essays.includes(e.id));
       app.innerHTML = `
         ${topbar()}
         <main class="wrap narrow daily-page">
           <h1 class="page-title">Done for today</h1>
-          <p class="lede">${firstOK} of ${items.length} right first time.${st ? ` ${st} ${st === 1 ? "day" : "days"} in a row.` : ""}</p>
+          <p class="lede">${firstOK} of ${items.length} right first time, +${firstOK * 10} XP.${st ? ` ${st} ${st === 1 ? "day" : "days"} in a row.` : ""}</p>
           <ul class="daily-sum">${Object.keys(per).map((id) => {
             const p = per[id], e = E[id];
             return `<li><span class="ds-q"><b>Q${id}</b> ${esc(e.q)}</span><span class="ds-bar" aria-hidden="true"><i style="width:${Math.round((100 * p.ok) / p.n)}%"></i></span><span class="ds-n">${p.ok} of ${p.n}</span></li>`;
@@ -1467,6 +1623,361 @@
     render();
   };
 
+  /* ---------- play: three short games per essay ----------
+     1. Build the chain: pick the right next link out of three (learn the order by playing it).
+     2. Gap rush: 90 seconds, type the missing key terms (production, against the clock).
+     3. Boss fight: write the essay; every point you recall hits the boss live. */
+  const SOUND_KEY = "essayjar:sound";
+  const soundOn = () => store.get(SOUND_KEY) !== "off";
+  const blip = (kind) => {
+    if (!soundOn()) return;
+    try {
+      wakeAudio();
+      if (!audio) return;
+      const t0 = audio.currentTime;
+      const notes = kind === "good" ? [[523, 0], [784, 0.07]] : kind === "hit" ? [[660, 0], [990, 0.06]]
+        : kind === "win" ? [[523, 0], [659, 0.1], [784, 0.2], [1047, 0.3]] : [[196, 0], [147, 0.09]];
+      notes.forEach(([f, t]) => {
+        const o = audio.createOscillator(), g = audio.createGain();
+        o.type = kind === "bad" ? "triangle" : "sine"; o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, t0 + t);
+        g.gain.exponentialRampToValueAtTime(0.1, t0 + t + 0.015);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + t + (kind === "win" ? 0.35 : 0.18));
+        o.connect(g); g.connect(audio.destination);
+        o.start(t0 + t); o.stop(t0 + t + 0.4);
+      });
+    } catch (e) { /* sound is optional */ }
+  };
+  let gameTick = null, gameKey = null;
+  document.addEventListener("keydown", (ev) => { if (gameKey) gameKey(ev); });
+  const stopGame = () => { clearInterval(gameTick); gameTick = null; gameKey = null; };
+
+  const addXP = (n) => { const x = Math.max(0, Math.round(n)); S.xp = (S.xp || 0) + x; const d = dayLog(); d.xp = (d.xp || 0) + x; save(); };
+  const levelOf = (xp) => {
+    let lvl = 1, need = 100, left = xp || 0;
+    while (left >= need) { left -= need; lvl++; need = 100 + (lvl - 1) * 50; }
+    return { lvl, into: left, need };
+  };
+  const setStars = (id, game, stars, score) => {
+    const r = (S.play[id] = S.play[id] || {});
+    const prev = r[game] || { stars: 0, best: 0 };
+    r[game] = { stars: Math.max(prev.stars, stars), best: Math.max(prev.best, score || 0) };
+    save();
+    return prev;
+  };
+  const starsHTML = (n, of = 3) => `<span class="stars" aria-label="${n} of ${of} stars">${"★".repeat(n)}<span class="off">${"★".repeat(Math.max(0, of - n))}</span></span>`;
+  const isDown = (id) => !!(S.play[id] && S.play[id].boss && S.play[id].boss.stars >= 3);
+  const bossCard = (e) => {
+    const b = window.bossFor(e.id), st = status(e.id), n = essayStars(e.id), down = isDown(e.id);
+    return `
+      <li class="bcard st-${st}${down ? " down" : ""}">
+        <a href="#/play/${e.id}">
+          <span class="bc-art">${window.bossSVG(e.id)}${down ? `<span class="bc-stamp">Defeated</span>` : ""}</span>
+          <span class="bc-text">
+            <span class="bc-top"><b>Q${e.id}</b>${esc(b.name)}</span>
+            <span class="bc-q">${esc(e.q)}</span>
+            <span class="bc-meta"><span class="bc-stars">★ ${n} of 9</span><span>${down ? "Defeated" : LABEL[st]}</span></span>
+          </span>
+        </a>
+      </li>`;
+  };
+  const essayStars = (id) => ["build", "gaps", "boss"].reduce((s, g) => s + ((S.play[id] && S.play[id][g] && S.play[id][g].stars) || 0), 0);
+
+  const GAMES = [
+    { id: "build", name: "Build the chain", what: "The chain grows one link at a time. Pick the right next link out of three. You learn the order by playing it, no reading first.", time: "about 2 minutes" },
+    { id: "gaps", name: "Gap rush", what: "90 seconds against the clock. Type the missing key term in each link. Streaks multiply your points.", time: "90 seconds" },
+    { id: "boss", name: "Boss fight", what: "Write the essay from the question alone. Every point you remember hits the boss, live, as you type.", time: "about 5 minutes" }
+  ];
+  const viewPlay = (e) => {
+    const rec = S.play[e.id] || {};
+    const nextUp = GAMES.find((g) => !(rec[g.id] && rec[g.id].stars));
+    app.innerHTML = `
+      ${topbar()}
+      <main class="wrap play-hub">
+        ${guestNotice()}
+        <section class="hub-head">
+          <div class="hub-art${isDown(e.id) ? " down" : ""}">${window.bossSVG(e.id)}${isDown(e.id) ? `<span class="bc-stamp">Defeated</span>` : ""}</div>
+          <div class="hub-text">
+            <p class="hub-boss"><b>${esc(window.bossFor(e.id).name)}</b>${esc(window.bossFor(e.id).title)}</p>
+            <h1 class="question">${esc(e.q)}</h1>
+            <p class="meta">Essay ${e.id}. ${isDown(e.id) ? "Defeated. Play again any time to keep it sharp." : "Three games, easiest first. Weaken it, then finish it in the boss fight."} ${essayStars(e.id)} of 9 stars.</p>
+          </div>
+        </section>
+        <ol class="levels">${GAMES.map((g, i) => {
+          const r = rec[g.id], up = nextUp && nextUp.id === g.id;
+          return `
+          <li class="level${up ? " up" : ""}${r && r.stars ? " done" : ""}">
+            <span class="lv-n" aria-hidden="true">${i + 1}</span>
+            <div class="lv-body">
+              <h2>${g.name}</h2>
+              <p>${g.what}</p>
+              <p class="lv-meta">${starsHTML(r ? r.stars : 0)}<span>${g.time}${r && r.best ? `, best ${r.best}` : ""}</span></p>
+            </div>
+            <a class="btn${up ? "" : " ghost"}" href="${g.id === "boss" ? `#/boss/${e.id}` : `#/game/${g.id}/${e.id}`}">${r && r.stars ? "Play again" : "Play"}</a>
+          </li>`;
+        }).join("")}</ol>
+        <p class="hint">Prefer reading first? <a href="#/learn/${e.id}">Learn it step by step</a> or <a href="#/study/${e.id}">open the notes</a>.</p>
+      </main>
+      ${footer()}`;
+  };
+
+  const gameShell = (e, hud, keys) => `
+    ${topbar()}
+    <main class="wrap game-page">
+      <div class="game">
+        <div class="g-top">
+          <p class="et-cue"><span class="et-qnum">Q${e.id}</span><span class="et-qtext">${esc(e.q)}</span></p>
+          <div class="g-hud">${hud}<button type="button" class="g-sound" data-g="sound" aria-pressed="${soundOn()}">${soundOn() ? "sound on" : "sound off"}</button></div>
+        </div>
+        <div class="g-arena"></div>
+        <div class="g-bar" aria-hidden="true"><i></i></div>
+        <div class="g-stage"></div>
+        <p class="et-keys">${keys}<a class="g-quit" href="#/play/${e.id}">quit</a></p>
+      </div>
+    </main>`;
+  const attackKind = (combo) => (combo >= 10 ? "bolt" : combo >= 5 ? "fireball" : "arrow");
+  const floatPts = (el, txt, cls) => {
+    const f = document.createElement("span");
+    f.className = "g-float" + (cls ? " " + cls : "");
+    f.textContent = txt;
+    el.appendChild(f);
+    setTimeout(() => f.remove(), 950);
+  };
+  const resultsHTML = (o) => `
+    <div class="g-res">
+      <p class="g-res-title">${esc(o.title)}</p>
+      <p class="g-stars">${starsHTML(o.stars)}${o.stars > o.prevStars && o.prevStars ? `<span class="g-new">new best</span>` : ""}</p>
+      <dl class="et-stats">${o.stats.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl>
+      ${o.note ? `<p class="et-note">${esc(o.note)}</p>` : ""}
+      ${o.missed && o.missed.length ? `<div class="g-missed"><p>Read these once more:</p><ul>${o.missed.map((m) => `<li>${m}</li>`).join("")}</ul></div>` : ""}
+      <div class="g-actions">
+        ${o.next ? `<a class="g-btn main" href="${o.next.href}">${o.next.label}</a>` : ""}
+        <button type="button" class="g-btn" data-g="again">Play again</button>
+        <a class="g-btn" href="#/play/${o.id}">All games</a>
+      </div>
+    </div>`;
+  const gameClicks = (e, extra) => (ev) => {
+    const b = ev.target.closest("[data-g]");
+    if (!b) return extra && extra(ev);
+    if (b.dataset.g === "sound") {
+      store.set(SOUND_KEY, soundOn() ? "off" : "on");
+      b.setAttribute("aria-pressed", String(soundOn()));
+      b.textContent = soundOn() ? "sound on" : "sound off";
+      if (soundOn()) blip("good");
+    } else if (b.dataset.g === "again") route();
+  };
+
+  // ---- 1. Build the chain ----
+  const viewBuild = (e) => {
+    const links = chainLinks(e);
+    const r = rng(`${e.id}:${Date.now()}`);
+    const others = C.essays.filter((x) => x.id !== e.id).flatMap((x) => chainLinks(x));
+    const st = { i: 0, combo: 0, best: 0, score: 0, miss: 0, lock: false, missed: [], opts: [] };
+    app.innerHTML = gameShell(e,
+      `<span class="g-stat"><b class="g-score">0</b> pts</span><span class="g-stat g-combo"></span>`,
+      `<span><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> pick</span><span>streaks of 5 throw fireballs, 10 call lightning</span>`);
+    const stage = app.querySelector(".g-stage"), bar = app.querySelector(".g-bar i");
+    const arena = window.mountArena(app.querySelector(".g-arena"), e.id, {});
+    const options = (i) => {
+      const right = links[i];
+      const near = links.slice(i + 1, i + 6).filter((l) => l !== right);
+      const far = links.filter((l, j) => j < i - 1 && l !== right);
+      const d1 = near.length ? near[Math.floor(r() * near.length)] : far[Math.floor(r() * far.length)];
+      const pool = others.filter((l) => l !== right && l !== d1);
+      const d2 = pool[Math.floor(r() * pool.length)];
+      return shuffle([right, d1, d2].filter(Boolean), r);
+    };
+    const hud = () => {
+      app.querySelector(".g-score").textContent = st.score;
+      app.querySelector(".g-combo").textContent = st.combo >= 2 ? `streak ×${Math.min(st.combo, 10)}` : "";
+      bar.style.width = `${(100 * st.i) / links.length}%`;
+    };
+    const render = () => {
+      const done = links.slice(0, st.i), shown = done.slice(-3);
+      stage.innerHTML = `
+        <div class="b-chain">
+          ${done.length > 3 ? `<p class="b-more">${done.length - 3} links above</p>` : `<p class="b-link b-q">${esc(e.q.replace(/\.$/, ""))}</p>`}
+          ${shown.map((l, k) => `${done.length > 3 && k === 0 ? "" : `<span class="b-arrow" aria-hidden="true">↓</span>`}<p class="b-link${k === shown.length - 1 ? " last" : ""}">${esc(l)}</p>`).join("")}
+          <span class="b-arrow" aria-hidden="true">↓</span>
+          <p class="b-slot">What comes next? <span>${st.i + 1} of ${links.length}</span></p>
+        </div>
+        <div class="b-cards">${st.opts.map((o, k) => `<button type="button" class="b-card" data-pick="${k}"><span class="b-key">${k + 1}</span><span>${esc(o)}</span></button>`).join("")}</div>`;
+    };
+    const advance = () => {
+      if (!stage.isConnected) return;
+      st.i++; st.lock = false;
+      if (st.i >= links.length) return end();
+      st.opts = options(st.i);
+      render(); hud();
+    };
+    const pick = (k) => {
+      if (st.lock || !st.opts[k]) return;
+      st.lock = true;
+      const right = links[st.i], btns = [...stage.querySelectorAll(".b-card")];
+      if (st.opts[k] === right) {
+        st.combo++; st.best = Math.max(st.best, st.combo);
+        const pts = 10 * Math.min(st.combo, 10);
+        st.score += pts;
+        btns[k].classList.add("right");
+        arena.attack(attackKind(st.combo), "+" + pts);
+        blip("good");
+        hud();
+        setTimeout(advance, 420);
+      } else {
+        st.combo = 0; st.miss++;
+        st.missed.push(right);
+        btns[k].classList.add("wrong");
+        btns[st.opts.indexOf(right)].classList.add("right", "reveal");
+        arena.taunt();
+        blip("bad");
+        hud();
+        setTimeout(advance, 1400);
+      }
+    };
+    const end = () => {
+      stopGame();
+      bar.style.width = "100%";
+      const n = links.length;
+      const stars = st.miss <= 1 ? 3 : st.miss <= Math.ceil(n * 0.15) ? 2 : 1;
+      const prev = setStars(e.id, "build", stars, st.score);
+      addXP(st.score / 10);
+      logEvent("build", e.id, stars);
+      arena.taunt(stars === 3 ? "Grr... you know my chain. Face me in the boss fight!" : null);
+      blip("win");
+      stage.innerHTML = resultsHTML({
+        id: e.id, title: st.miss ? "Chain built" : "Perfect chain", stars, prevStars: prev.stars,
+        stats: [["score", st.score], ["best streak", "×" + st.best], ["mistakes", st.miss], ["xp", "+" + Math.round(st.score / 10)]],
+        note: stars === 3 ? "You know the order. Now take the words away." : "Play it again until it’s 3 stars, or move on and come back.",
+        missed: [...new Set(st.missed)].map((m) => esc(m)),
+        next: { href: `#/game/gaps/${e.id}`, label: "Next: Gap rush" }
+      });
+      const n1 = stage.querySelector(".g-btn.main"); if (n1) n1.focus({ preventScroll: true });
+    };
+    app.onclick = gameClicks(e, (ev) => { const c = ev.target.closest("[data-pick]"); if (c) pick(Number(c.dataset.pick)); });
+    gameKey = (ev) => { if (["1", "2", "3"].includes(ev.key)) { ev.preventDefault(); pick(Number(ev.key) - 1); } };
+    st.opts = options(0);
+    render(); hud();
+  };
+
+  // ---- 2. Gap rush ----
+  const viewRush = (e) => {
+    const links = chainLinks(e), keys = keyTokens(e.atoms), qt = qToks(e);
+    const r = rng(`${e.id}:rush:${Date.now()}`);
+    const gaps = [];
+    links.forEach((link, li) => {
+      const cands = gapWords(link, keys, qt, new Set(toks(links[li - 1] || "")));
+      if (cands.length) gaps.push({ li, ...cands[Math.floor(r() * cands.length)] });
+    });
+    const LIMIT = 90;
+    const st = { k: 0, combo: 0, best: 0, score: 0, right: 0, wrong: 0, missed: [], queue: gaps.slice(), retried: new Set(), t0: 0, over: false, lock: false };
+    app.innerHTML = gameShell(e,
+      `<span class="g-stat"><b class="g-score">0</b> pts</span><span class="g-stat g-combo"></span><span class="g-stat g-time">1:30</span>`,
+      `<span><kbd>enter</kbd> check</span><span><kbd>tab</kbd> skip</span>`);
+    const stage = app.querySelector(".g-stage"), bar = app.querySelector(".g-bar i");
+    const arena = window.mountArena(app.querySelector(".g-arena"), e.id, {});
+    bar.style.width = "100%";
+    const hud = () => {
+      app.querySelector(".g-score").textContent = st.score;
+      app.querySelector(".g-combo").textContent = st.combo >= 2 ? `streak ×${Math.min(st.combo, 10)}` : "";
+    };
+    const showWord = (g, cls) => {
+      const words = links[g.li].split(/\s+/);
+      return words.map((w, i) => {
+        if (i !== g.wi) return esc(w);
+        const core = wordCore(w), at = w.indexOf(core);
+        return esc(w.slice(0, at)) + (cls ? `<mark class="${cls}">${esc(core)}</mark>` : `<span class="r-blank" aria-label="gap"></span>`) + esc(w.slice(at + core.length));
+      }).join(" ");
+    };
+    const render = () => {
+      const g = st.queue[st.k];
+      stage.innerHTML = `
+        <div class="r-card">
+          ${links[g.li - 1] ? `<p class="r-prev">${esc(links[g.li - 1])} <span aria-hidden="true">→</span></p>` : `<p class="r-prev">${esc(e.q.replace(/\.$/, ""))} <span aria-hidden="true">→</span></p>`}
+          <p class="r-link">${showWord(g)}</p>
+          <label class="sr" for="rIn">Missing word</label>
+          <input id="rIn" class="r-in" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="type the missing word">
+          <p class="r-count">${Math.min(st.k + 1, st.queue.length)} of ${st.queue.length}</p>
+        </div>`;
+      const inp = document.getElementById("rIn");
+      inp.focus({ preventScroll: true });
+      inp.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") { ev.preventDefault(); answer(inp.value, false); }
+        else if (ev.key === "Tab") { ev.preventDefault(); answer("", true); }
+      });
+      inp.addEventListener("input", () => { if (!st.t0) start(); }, { once: true });
+    };
+    const start = () => {
+      st.t0 = Date.now();
+      gameTick = setInterval(() => {
+        const left = Math.max(0, LIMIT - (Date.now() - st.t0) / 1000);
+        bar.style.width = `${(100 * left) / LIMIT}%`;
+        const tEl = app.querySelector(".g-time");
+        if (tEl) { tEl.textContent = mmss(left); tEl.classList.toggle("low", left < 15); }
+        if (left <= 0) end(true);
+      }, 100);
+    };
+    const answer = (val, skip) => {
+      if (st.lock || st.over) return;
+      if (!st.t0) start();
+      st.lock = true;
+      const g = st.queue[st.k], ok = !skip && gapGrade(val, g.core);
+      const card = stage.querySelector(".r-card");
+      if (ok) {
+        st.combo++; st.best = Math.max(st.best, st.combo); st.right++;
+        const pts = 10 * Math.min(st.combo, 10);
+        st.score += pts;
+        card.querySelector(".r-link").innerHTML = showWord(g, "yes");
+        arena.attack(attackKind(st.combo), "+" + pts);
+        blip("good");
+      } else {
+        st.combo = 0; st.wrong++;
+        st.missed.push(g);
+        card.querySelector(".r-link").innerHTML = showWord(g, "no");
+        card.classList.add("shake");
+        arena.taunt();
+        blip("bad");
+        if (!st.retried.has(g)) { st.retried.add(g); st.queue.push(g); }
+      }
+      hud();
+      setTimeout(() => {
+        st.lock = false;
+        if (st.over || !stage.isConnected) return;
+        st.k++;
+        if (st.k >= st.queue.length) return end(false);
+        render();
+      }, ok ? 420 : 1500);
+    };
+    const end = (timeUp) => {
+      if (st.over) return;
+      st.over = true;
+      stopGame();
+      const total = gaps.length, firstRight = gaps.filter((g) => !st.missed.includes(g)).length;
+      const reached = Math.min(st.k, st.queue.length);
+      const covered = new Set(st.queue.slice(0, reached)).size;
+      const acc = covered ? firstRight / total : 0;
+      const finished = !timeUp;
+      const stars = finished && acc >= 0.85 ? 3 : acc >= 0.6 ? 2 : covered ? 1 : 0;
+      const prev = setStars(e.id, "gaps", stars, st.score);
+      addXP(st.score / 10);
+      logEvent("gaps", e.id, stars);
+      arena.taunt(stars === 3 ? "You’ve learned my words... the boss fight decides it!" : null);
+      if (stars && !S.learned[e.id] && !atts(e.id).length) markLearned(e.id, false);
+      blip(stars >= 2 ? "win" : "bad");
+      stage.innerHTML = resultsHTML({
+        id: e.id, title: timeUp ? "Time!" : "All gaps done", stars, prevStars: prev.stars,
+        stats: [["score", st.score], ["right first time", `${firstRight}/${total}`], ["best streak", "×" + st.best], ["xp", "+" + Math.round(st.score / 10)]],
+        note: stars === 3 ? "You can produce the key terms. Time for the boss." : timeUp ? "Faster next time: skip with tab when a word won’t come." : "Play again to clear every gap first time.",
+        missed: [...new Set(st.missed)].map((g) => showWord(g, "no")),
+        next: { href: `#/boss/${e.id}`, label: "Next: Boss fight" }
+      });
+      const n1 = stage.querySelector(".g-btn.main"); if (n1) n1.focus({ preventScroll: true });
+    };
+    app.onclick = gameClicks(e);
+    gameKey = null;
+    if (!gaps.length) { end(false); return; }
+    render();
+  };
+
   /* ---------- type: EssayType on its own, for any essay ---------- */
   const viewType = (e) => {
     app.innerHTML = `
@@ -1487,9 +1998,13 @@
   };
 
   /* ---------- recall and exam ---------- */
+  const shortText = (s) => { const w = s.split(/\s+/); return w.slice(0, 7).join(" ") + (w.length > 7 ? "…" : ""); };
+  const bossStars = (score) => (score >= 0.999 ? 3 : score >= 0.7 ? 2 : score >= 0.4 ? 1 : 0);
+  const BOSS_SECS = 360;
   const viewRecall = (e, mode) => {
-    const exam = mode === "exam";
-    const st = { hint: false, conf: null, done: false };
+    const exam = mode === "exam", timed = mode === "boss";
+    const st = { hint: false, conf: null, done: false, mode };
+    const passTotal = passOf(e).length;
     const saved = draft.get(e.id);
 
     app.innerHTML = `
@@ -1498,7 +2013,15 @@
         ${guestNotice()}
         <p class="meta">${exam ? "Mock exam. No notes, no hints." : `Essay ${e.id}. Diagram first, then everything else you remember, in any order.`}</p>
         <h1 class="question">${esc(e.q)}</h1>
-        ${exam ? timerHTML(C.examMinutes * 60, "Time left", { locked: true, big: true, note: "No pausing, like the real thing. It hands itself in at zero." }) : ""}
+        ${exam ? timerHTML(C.examMinutes * 60, "Time left", { locked: true, big: true, note: "No pausing, like the real thing. It hands itself in at zero." }) : `
+        <div class="bosshud">
+          <div class="bh-arena"></div>
+          <div class="bh-row">
+            <p class="bh-tip">Every point you write hits the boss. Pass points take its HP; boost points are lightning bonus hits.</p>
+            ${timed ? `<span class="bh-time">${mmss(BOSS_SECS)}</span>` : ""}
+          </div>
+          <div class="bh-hits" aria-hidden="true"></div>
+        </div>`}
         <div class="skeleton" id="skeleton" hidden>
           <p>The sections, nothing more:</p>
           <ol>${e.sections.map((s) => `<li>${esc(s.h)}</li>`).join("")}</ol>
@@ -1526,6 +2049,50 @@
     ans.focus();
     if (exam) ans.addEventListener("keydown", wakeAudio, { once: true });
     ans.addEventListener("input", () => draft.set(e.id, ans.value));
+    if (!exam) {
+      let seen = null, liveT = null, down = false;
+      const hud = app.querySelector(".bosshud");
+      const arena = window.mountArena(hud.querySelector(".bh-arena"), e.id, { hp: true, big: true });
+      st.arena = arena;
+      const spawn = (a) => {
+        const h = document.createElement("span");
+        h.className = "bh-hit" + (a.tier === "boost" ? " crit" : "");
+        h.textContent = (a.tier === "boost" ? "bonus: " : "hit: ") + shortText(a.s);
+        const box = hud.querySelector(".bh-hits");
+        box.prepend(h);
+        while (box.children.length > 3) box.lastChild.remove();
+        setTimeout(() => h.remove(), 2600);
+      };
+      const hp = (quiet) => {
+        const T = tokenize(ans.value);
+        const now = new Set(e.atoms.filter((a) => checkAtom(T, a)).map((a) => a.id));
+        const fresh = seen ? e.atoms.filter((a) => now.has(a.id) && !seen.has(a.id)) : [];
+        seen = now;
+        const left = passOf(e).filter((a) => !now.has(a.id)).length;
+        arena.hp(left, passTotal);
+        if (!quiet && fresh.length) {
+          fresh.forEach((a, k) => setTimeout(() => { spawn(a); arena.attack(a.tier === "boost" ? "bolt" : "fireball", a.tier === "boost" ? "bonus" : "−1 HP"); }, k * 260));
+          blip("hit");
+        }
+        if (left === 0 && !down) {
+          down = true;
+          setTimeout(() => arena.defeat(), quiet ? 0 : fresh.length * 260 + 420);
+          hud.querySelector(".bh-tip").textContent = "Boss defeated! Keep going: boost points are bonus hits.";
+          if (!quiet) blip("win");
+        }
+      };
+      hp(true);
+      ans.addEventListener("input", () => { clearTimeout(liveT); liveT = setTimeout(() => hp(false), 250); });
+      if (timed) {
+        const t0 = Date.now();
+        gameTick = setInterval(() => {
+          const left = Math.max(0, BOSS_SECS - (Date.now() - t0) / 1000);
+          const tEl = hud.querySelector(".bh-time");
+          if (tEl) { tEl.textContent = mmss(left); tEl.classList.toggle("low", left < 60); }
+          if (left <= 0) finish();
+        }, 250);
+      }
+    }
     ans.addEventListener("keydown", (ev) => {
       if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") { ev.preventDefault(); finish(); }
     });
@@ -1548,6 +2115,7 @@
       if (st.done) return;
       st.done = true;
       stopTicker();
+      stopGame();
       const text = ans.value;
       draft.del(e.id);
       const T = tokenize(text);
@@ -1562,6 +2130,13 @@
       list.push({ d: today(), score: 0, boost: 0, hint: st.hint, conf: st.conf, exam });
       R.idx = list.length - 1;
       updateScore(e, R);
+      logEvent(exam ? "exam" : "boss", e.id, Math.round(S.att[e.id][R.idx].score * 100));
+      if (!exam && st.arena && missedPass(e, R).length) st.arena.taunt(`Ha! I survived with ${missedPass(e, R).length} HP. Read what you missed and come back.`);
+      if (!exam) {
+        const p = passOf(e), b = boostOf(e);
+        R.xp = 10 * p.filter((a) => R.got[a.id]).length + 5 * b.filter((a) => R.got[a.id]).length;
+        addXP(R.xp);
+      }
       if (!missedPass(e, R).length) R.stage = "review";
       ans.hidden = true;
       app.querySelector(".bar").hidden = true;
@@ -1581,6 +2156,7 @@
     rec.score = p.length ? p.filter((a) => R.got[a.id]).length / p.length : 0;
     rec.boost = b.length ? b.filter((a) => R.got[a.id]).length / b.length : 0;
     schedule(e.id);
+    if (!rec.exam) setStars(e.id, "boss", bossStars(rec.score), Math.round(rec.score * 100));
     save();
   };
 
@@ -1588,6 +2164,12 @@
     const rec = S.att[e.id][R.idx];
     const pct = Math.round(rec.score * 100);
     const lines = [];
+    if (st.mode === "exam") lines.push(rec.score >= 0.9 ? "You beat the final boss." : "The final boss survives this time. Train the weak essays and come back.");
+    if (st.mode !== "exam") {
+      const left = passOf(e).filter((a) => !R.got[a.id]).length;
+      lines.push(left ? `The boss survived with ${left} HP.` : "Boss defeated.");
+      if (R.xp) lines.push(`+${R.xp} XP.`);
+    }
     if (st.conf === 2 && rec.score < 0.7) lines.push(`You felt sure and got ${pct}%. This one is fooling you, so it comes back soon.`);
     else if (st.conf === 0 && rec.score >= 0.7) lines.push(`You felt blank and still got ${pct}%. You know more than you think.`);
     else if (rec.score >= 0.9) lines.push("Clean recall.");
@@ -1654,7 +2236,7 @@
 
     box.innerHTML = `
       <section class="score-card">
-        <p class="score"><strong>${gp} of ${p.length}</strong> pass points${b.length ? `, ${gb} of ${b.length} boost points` : ""}.</p>
+        <p class="score"><strong>${gp} of ${p.length}</strong> pass points${b.length ? `, ${gb} of ${b.length} boost points` : ""}.${st.mode !== "exam" ? ` <span class="score-stars">${starsHTML(bossStars(S.att[e.id][R.idx].score))}</span>` : ""}</p>
         <p class="verdict">${esc(verdict(e, R, st))}</p>
       </section>
       <section class="block your-answer">
@@ -1700,7 +2282,8 @@
       ${topbar()}
       <main class="wrap narrow">
         ${guestNotice()}
-        <h1 class="page-title">Mock exam</h1>
+        <div class="final-art">${window.bossSVG("final")}</div>
+        <h1 class="page-title">The final boss: ${esc(window.bossFor("final").name)}</h1>
         <p class="lede">One essay from all ${C.essays.length}, every one equally likely, just like the box. ${C.examMinutes} minutes on the clock, no notes and no hints. When time runs out it hands itself in.</p>
         <p class="hint">Do one every two or three days once all essays are introduced. Do at least one on paper to feel your handwriting speed.</p>
         <div class="actions"><button class="btn" data-act="exam-draw">Draw my question</button></div>
@@ -1717,7 +2300,19 @@
         <p class="lede">It isn’t rereading and it isn’t rote memorising. You learn each essay by pulling it out of your memory, again and again, spread over days, until you can write it from the question alone.</p>
 
         <section class="block">
-          <h2>A new essay: press Learn</h2>
+          <h2>A new essay: press Play</h2>
+          <p>Three short games, easiest first. No reading the chain first: you learn it by playing it.</p>
+          <ol>
+            <li><strong>Build the chain</strong> (about 2 minutes): the chain grows one link at a time; pick the right next link out of three. Guessing wrong is fine: the right link lights up and you remember it better for having guessed.</li>
+            <li><strong>Gap rush</strong> (90 seconds): type the missing key term in each link, against the clock. Streaks multiply your points.</li>
+            <li><strong>Boss fight</strong> (6 minutes): write the essay from the question. Every point you remember hits the boss, live, as you type.</li>
+          </ol>
+          <p>Each game gives up to 3 stars. Play a game again until it’s 3 stars, then move on. Finishing Gap rush puts the essay in your daily review.</p>
+          <p class="hint">Why this sticks better than reading: every click and every word you type is a recall with instant feedback, the rounds are short, and it gets harder as you get better (pick it, then type it, then write it all).</p>
+        </section>
+
+        <section class="block">
+          <h2>Prefer reading first? Learn</h2>
           <ol>
             <li><strong>Warm-up guess.</strong> Type what you know before reading. Trying first makes the reading stick.</li>
             <li><strong>The diagram.</strong> Read it with the story, type the story in EssayType, then hide it, sketch it on paper, compare, fix.</li>
@@ -1796,8 +2391,244 @@
       ${footer()}`;
   };
 
+  /* ---------- login, account, leaderboard, admin ---------- */
+  const ago = (iso) => {
+    if (!iso) return "never";
+    const t = new Date(iso), ms = Date.now() - t.getTime();
+    if (isNaN(ms)) return "never";
+    if (ms < 120000) return "just now";
+    if (ms < 3600000) return Math.round(ms / 60000) + " min ago";
+    const hm = pad(t.getHours()) + ":" + pad(t.getMinutes()), d = diff(fmt(t), today());
+    if (d === 0) return "today at " + hm;
+    if (d === 1) return "yesterday at " + hm;
+    return t.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  };
+  const mins = (secs) => (secs >= 3600 ? `${Math.floor(secs / 3600)} h ${Math.round((secs % 3600) / 60)} min` : `${Math.round((secs || 0) / 60)} min`);
+  const activeDay = (d, k) => !!((d.quiz && d.quiz.days && d.quiz.days[k] && d.quiz.days[k].done) || (d.log && d.log[k] && d.log[k].secs >= 60));
+  const streakOf = (d, t) => {
+    let n = 0, cur = t;
+    if (!activeDay(d, cur)) cur = addDays(cur, -1);
+    while (activeDay(d, cur)) { n++; cur = addDays(cur, -1); }
+    return n;
+  };
+  const eventText = (ev) => {
+    const q = ev.id ? `Q${ev.id}` : "";
+    const b = ev.id && window.bossFor ? window.bossFor(ev.id).name : q;
+    return ({
+      build: `Built the chain for ${q} (${ev.v} ${ev.v === 1 ? "star" : "stars"})`,
+      gaps: `Gap rush on ${q} (${ev.v} ${ev.v === 1 ? "star" : "stars"})`,
+      boss: Number(ev.v) >= 100 ? `Defeated ${b} (${q})` : `Fought ${b} (${q}), ${ev.v}%`,
+      exam: `Mock exam on ${q}, ${ev.v}%`,
+      daily: `Daily review, ${ev.v} right`,
+      learn: `Learned ${q}`
+    })[ev.k] || ev.k;
+  };
+  const summarize = (d, t) => {
+    d = d || {};
+    const log = d.log || {}, play = d.play || {};
+    const week = Object.keys(log).filter((k) => { const a = diff(k, t); return a >= 0 && a < 7; }).reduce((s, k) => s + (log[k].secs || 0), 0);
+    const events = [];
+    Object.keys(log).forEach((k) => (log[k].ev || []).forEach((ev) => events.push(ev)));
+    events.sort((a, b) => b.t - a.t);
+    return {
+      xp: d.xp || 0, lvl: levelOf(d.xp || 0).lvl, today: (log[t] && log[t].secs) || 0, week,
+      bosses: Object.keys(play).filter((id) => play[id] && play[id].boss && play[id].boss.stars >= 3).length,
+      stars: Object.keys(play).reduce((s, id) => s + ["build", "gaps", "boss"].reduce((x, g) => x + ((play[id][g] && play[id][g].stars) || 0), 0), 0),
+      learned: new Set([...Object.keys(d.learned || {}), ...Object.keys(d.att || {}).filter((id) => (d.att[id] || []).length)]).size,
+      streak: streakOf(d, t), daily: !!(d.quiz && d.quiz.days && d.quiz.days[t] && d.quiz.days[t].done), events, log
+    };
+  };
+
+  const viewLogin = () => {
+    if (!ONLINE) { location.hash = "#/users"; return; }
+    if (user) { location.hash = "#/"; return; }
+    let mode = "login";
+    const msg = loginMsg; loginMsg = "";
+    const render = (err) => {
+      app.innerHTML = `
+        <main class="wrap login-page">
+          <div class="login-art" aria-hidden="true">${[1, 7, 12, 18, 9].map((k) => window.bossSVG(k)).join("")}</div>
+          <section class="login-card">
+            <h1 class="login-title">Essay Jar</h1>
+            <p class="login-sub">Twenty biochem bosses stand between you and the colloquium. Learn their essays to defeat them.</p>
+            <div class="tabs" role="tablist">
+              <button type="button" role="tab" data-mode="login" aria-selected="${mode === "login"}">Log in</button>
+              <button type="button" role="tab" data-mode="signup" aria-selected="${mode === "signup"}">Create account</button>
+            </div>
+            <form id="authForm" autocomplete="on" novalidate>
+              <label>Name <input name="name" maxlength="24" required autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="Your name"></label>
+              <label>Password <input name="pass" type="password" required autocomplete="${mode === "login" ? "current-password" : "new-password"}" placeholder="${mode === "login" ? "Your password" : "At least 6 characters"}"></label>
+              ${mode === "signup" ? `<p class="fine">Your name, level and bosses defeated appear on the leaderboard. ${esc(OWNER)}, who runs this site, can see your progress and study time.</p>` : ""}
+              <p class="err" id="authErr" ${err || msg ? "" : "hidden"}>${esc(err || msg)}</p>
+              <button class="btn wide" type="submit">${mode === "login" ? "Log in" : "Create account"}</button>
+            </form>
+            <button type="button" class="linkbtn guest-link" data-act="guest-play">Play as a guest instead (nothing is saved)</button>
+          </section>
+        </main>`;
+      const f = document.getElementById("authForm");
+      f.querySelector("input[name=name]").focus();
+      f.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        const name = f.querySelector("input[name=name]").value.trim().replace(/\s+/g, " "), pass = f.querySelector("input[name=pass]").value;
+        const errEl = document.getElementById("authErr");
+        const fail = (m) => { errEl.textContent = m; errEl.hidden = false; btn.disabled = false; btn.textContent = mode === "login" ? "Log in" : "Create account"; };
+        const btn = f.querySelector("button[type=submit]");
+        if (!/^[A-Za-z0-9 _.-]{2,24}$/.test(name)) return fail("Use 2 to 24 letters, numbers or spaces for your name.");
+        if (pass.length < 6) return fail(mode === "login" ? "Type your password." : "Use a password of at least 6 characters.");
+        btn.disabled = true;
+        btn.textContent = mode === "login" ? "Logging in…" : "Creating your account…";
+        const guestS = !user && anyProgress(S) ? S : null;
+        apiCall(mode, { name, pass }).then((r) => {
+          if (!r || !r.ok) return fail((r && r.error) || "Something went wrong. Try again.");
+          const from = startSession(r, guestS);
+          if (from === "device") loginMsg = "We brought your progress from this device into your account.";
+          if (from === "guest") loginMsg = "Your guest progress is now saved to your account.";
+          location.hash = "#/";
+        }).catch(() => fail("Can’t reach the server. Check your internet and try again."));
+      });
+    };
+    app.onclick = (ev) => {
+      const t = ev.target.closest("[data-mode]");
+      if (t && t.dataset.mode !== mode) { mode = t.dataset.mode; render(); }
+    };
+    render();
+  };
+
+  const viewAccount = () => {
+    if (!ONLINE) { location.hash = "#/users"; return; }
+    if (!user) { location.hash = "#/login"; return; }
+    const sm = summarize(S, today());
+    const state = { saved: "Everything is saved online.", saving: "Saving…", offline: "Offline. Your progress is kept on this device and saves as soon as you’re back online." }[syncState] || "";
+    app.innerHTML = `
+      ${topbar()}
+      <main class="wrap narrow account">
+        <h1 class="page-title">${esc(user.name)}</h1>
+        <p class="lede">Level ${sm.lvl}, ${sm.xp} XP. ${sm.bosses} of ${C.essays.length} bosses defeated. ${mins(sm.today)} studied today.</p>
+        <p class="hint" id="syncLine">${esc(state)}</p>
+        <div class="actions">
+          <a class="btn" href="#/board">Leaderboard</a>
+          ${user.admin ? `<a class="btn ghost" href="#/admin">Admin</a>` : ""}
+          <button class="btn ghost" data-act="logout">Log out</button>
+        </div>
+      </main>
+      ${footer()}`;
+  };
+
+  const viewBoard = () => {
+    if (!ONLINE || !user) { location.hash = ONLINE ? "#/login" : "#/"; return; }
+    app.innerHTML = `
+      ${topbar()}
+      <main class="wrap narrow board">
+        <h1 class="page-title">Leaderboard</h1>
+        <p class="lede">Everyone fighting the same ${C.essays.length} bosses. XP comes from every right answer.</p>
+        <div id="boardBox"><p class="hint">Loading…</p></div>
+      </main>
+      ${footer()}`;
+    syncNow(false).then(() => apiCall("board", { token: acct.token, today: today() })).then((r) => {
+      const box = document.getElementById("boardBox");
+      if (!box) return;
+      if (!r || !r.ok) { box.innerHTML = `<p class="err">${esc((r && r.error) || "Couldn’t load the leaderboard.")}</p>`; return; }
+      const rows = r.rows.slice().sort((a, b) => b.xp - a.xp || b.bosses - a.bosses);
+      box.innerHTML = `<ol class="lb">${rows.map((x, i) => `
+        <li class="${x.name.toLowerCase() === user.name.toLowerCase() ? "me" : ""}">
+          <span class="lb-rank">${i + 1}</span>
+          <span class="lb-name">${esc(x.name)}${x.activeToday ? `<span class="lb-today">studied today</span>` : ""}</span>
+          <span class="lb-stat"><b>Level ${levelOf(x.xp).lvl}</b>${x.xp} XP</span>
+          <span class="lb-stat"><b>${x.bosses} of ${C.essays.length}</b>bosses</span>
+          <span class="lb-stat"><b>${x.streak}</b>day streak</span>
+        </li>`).join("")}</ol>`;
+    }).catch(() => { const box = document.getElementById("boardBox"); if (box) box.innerHTML = `<p class="err">Can’t reach the server right now.</p>`; });
+  };
+
+  const viewAdmin = () => {
+    if (!ONLINE || !user) { location.hash = ONLINE ? "#/login" : "#/"; return; }
+    if (!user.admin) { location.hash = "#/"; return; }
+    app.innerHTML = `
+      ${topbar()}
+      <main class="wrap admin">
+        <h1 class="page-title">Admin</h1>
+        <p class="lede">Who’s studying, how much and what they’re doing.</p>
+        <div id="adminBox"><p class="hint">Loading…</p></div>
+      </main>
+      ${footer()}`;
+    let data = [], open = null;
+    const t = today();
+    const draw = () => {
+      const box = document.getElementById("adminBox");
+      if (!box) return;
+      const rows = data.map((u) => Object.assign({ u }, summarize(u.data, t)))
+        .sort((a, b) => new Date(b.u.lastSeen || 0) - new Date(a.u.lastSeen || 0));
+      const online = rows.filter((r) => Date.now() - new Date(r.u.lastSeen || 0).getTime() < 180000).length;
+      const todayN = rows.filter((r) => r.today >= 60).length;
+      const totalToday = rows.reduce((s, r) => s + r.today, 0);
+      box.innerHTML = `
+        <div class="kpis">
+          <div><b>${rows.length}</b><span>accounts</span></div>
+          <div><b>${online}</b><span>online now</span></div>
+          <div><b>${todayN}</b><span>studied today</span></div>
+          <div><b>${mins(totalToday)}</b><span>studied today, all users</span></div>
+        </div>
+        <div class="table-wrap"><table class="users-table">
+          <thead><tr><th>Name</th><th>Last seen</th><th>Today</th><th>Last 7 days</th><th>Bosses</th><th>Learned</th><th>Level</th><th>Streak</th><th>Daily review</th></tr></thead>
+          <tbody>${rows.map((r, i) => {
+            const on = Date.now() - new Date(r.u.lastSeen || 0).getTime() < 180000;
+            return `
+            <tr class="${open === i ? "open" : ""}" data-row="${i}" tabindex="0">
+              <td><span class="dot${on ? " on" : ""}" title="${on ? "Online now" : ""}"></span>${esc(r.u.name)}${r.u.admin ? ` <span class="tag">owner</span>` : ""}</td>
+              <td>${esc(on ? "online now" : ago(r.u.lastSeen))}</td>
+              <td>${mins(r.today)}</td><td>${mins(r.week)}</td>
+              <td>${r.bosses} of ${C.essays.length}</td><td>${r.learned}</td><td>${r.lvl}</td><td>${r.streak}</td>
+              <td>${r.daily ? "done" : "not yet"}</td>
+            </tr>
+            ${open === i ? `<tr class="detail"><td colspan="9">${detail(r)}</td></tr>` : ""}`;
+          }).join("")}</tbody>
+        </table></div>
+        <p class="hint">Tap a person to see their bosses, study time and recent activity.</p>`;
+    };
+    const detail = (r) => {
+      const play = (r.u.data && r.u.data.play) || {};
+      const days = [...Array(14)].map((_, k) => addDays(t, k - 13));
+      const maxS = Math.max(600, ...days.map((d) => (r.log[d] && r.log[d].secs) || 0));
+      return `
+        <div class="ud">
+          <div>
+            <h3>Bosses</h3>
+            <ul class="ud-bosses">${C.essays.map((e) => {
+              const p = play[e.id] || {}, st = ["build", "gaps", "boss"].reduce((x, g) => x + ((p[g] && p[g].stars) || 0), 0);
+              const down = p.boss && p.boss.stars >= 3;
+              return `<li class="${down ? "down" : st ? "some" : ""}" title="${esc(window.bossFor(e.id).name)}"><span>Q${e.id}</span><b>${down ? "defeated" : st ? st + " of 9" : "not started"}</b></li>`;
+            }).join("")}</ul>
+          </div>
+          <div>
+            <h3>Minutes studied, last 14 days</h3>
+            <div class="ud-chart">${days.map((d) => {
+              const secs = (r.log[d] && r.log[d].secs) || 0;
+              return `<span title="${esc(longDate(d))}: ${mins(secs)}"><i style="height:${Math.round((100 * secs) / maxS)}%"></i><em>${Number(d.slice(8))}</em></span>`;
+            }).join("")}</div>
+            <h3>Recent activity</h3>
+            ${r.events.length ? `<ul class="ud-feed">${r.events.slice(0, 25).map((ev) => `<li><span>${esc(ago(new Date(ev.t).toISOString()))}</span>${esc(eventText(ev))}</li>`).join("")}</ul>` : `<p class="hint">Nothing yet.</p>`}
+          </div>
+        </div>`;
+    };
+    app.onclick = (ev) => {
+      const tr = ev.target.closest("tr[data-row]");
+      if (!tr) return;
+      const i = Number(tr.dataset.row);
+      open = open === i ? null : i;
+      draw();
+    };
+    syncNow(false).then(() => apiCall("admin", { token: acct.token })).then((r) => {
+      const box = document.getElementById("adminBox");
+      if (!box) return;
+      if (!r || !r.ok) { box.innerHTML = `<p class="err">${esc((r && r.error) || "Couldn’t load.")}</p>`; return; }
+      data = r.users;
+      draw();
+    }).catch(() => { const box = document.getElementById("adminBox"); if (box) box.innerHTML = `<p class="err">Can’t reach the server right now.</p>`; });
+  };
+
   /* ---------- users ---------- */
   const viewUsers = () => {
+    if (ONLINE) { location.hash = user ? "#/account" : "#/login"; return; }
     const keep = !user && hasProgress(S);
     const statLine = (s) => {
       const started = Object.keys(s.att).filter((id) => s.att[id] && s.att[id].length);
@@ -1992,6 +2823,8 @@
     else if (act === "exam-draw") showSlip(draw(true), true);
     else if (act === "close") closeModal();
     else if (act === "guest") { switchTo(null); location.hash = "#/"; }
+    else if (act === "guest-play") { session.set(GUEST_KEY, "1"); location.hash = "#/"; route(); }
+    else if (act === "logout") logout();
     else if (act === "cover") {
       const on = el.getAttribute("aria-pressed") !== "true";
       el.setAttribute("aria-pressed", String(on));
@@ -2048,21 +2881,32 @@
     destroyET();
     closeModal();
     app.onclick = null;
-    const [view, arg] = location.hash.replace(/^#\/?/, "").split("/");
-    const e = E[Number(arg)];
+    stopGame();
+    const [view, arg, arg2] = location.hash.replace(/^#\/?/, "").split("/");
+    const e = E[Number(view === "game" ? arg2 : arg)];
     window.scrollTo(0, 0);
+    if (ONLINE && !user && session.get(GUEST_KEY) !== "1" && !["login", "how"].includes(view)) return viewLogin();
     if (view === "study" && e) return viewStudy(e);
     if (view === "learn" && e) return viewLearn(e);
     if (view === "type" && e) return viewType(e);
+    if (view === "play" && e) return viewPlay(e);
+    if (view === "game" && e && arg === "build") return viewBuild(e);
+    if (view === "game" && e && arg === "gaps") return viewRush(e);
+    if (view === "boss" && e) return viewRecall(e, "boss");
     if (view === "daily") return viewDaily(arg === "more");
     if (view === "recall" && e) return viewRecall(e, "practice");
     if (view === "exam" && e) return viewRecall(e, "exam");
     if (view === "exam") return viewExamStart();
     if (view === "how") return viewHow();
     if (view === "users") return viewUsers();
+    if (view === "login") return viewLogin();
+    if (view === "account") return viewAccount();
+    if (view === "board") return viewBoard();
+    if (view === "admin") return viewAdmin();
     if (view === "settings") return viewSettings();
     viewHome();
   };
   window.addEventListener("hashchange", route);
   route();
+  bootSync();
 })();
