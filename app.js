@@ -133,10 +133,17 @@
   const keyFor = (id) => "essayjar:" + C.id + ":u:" + id;
   const draftPrefix = (id) => "essayjar-draft:" + C.id + ":" + id + ":";
   const newId = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
-  const fresh = () => ({ v: 1, start: today(), exam: C.examDate, att: {}, due: {} });
+  const norm = (s) => {
+    s.learned = s.learned || {};
+    s.quiz = s.quiz || {};
+    s.quiz.days = s.quiz.days || {};
+    s.quiz.last = s.quiz.last || {};
+    return s;
+  };
+  const fresh = () => norm({ v: 1, start: today(), exam: C.examDate, att: {}, due: {} });
   const valid = (s) => !!(s && s.v === 1 && s.att && s.due && s.start && s.exam);
   const loadState = (id) => {
-    try { const s = JSON.parse(store.get(keyFor(id))); if (valid(s)) return s; } catch (e) { /* fall through */ }
+    try { const s = JSON.parse(store.get(keyFor(id))); if (valid(s)) return norm(s); } catch (e) { /* fall through */ }
     return fresh();
   };
   const loadUsers = () => {
@@ -641,7 +648,7 @@
   const cleanDays = (id) => cleanDaysIn(S, id);
   const status = (id) => {
     const a = atts(id);
-    if (!a.length) return "new";
+    if (!a.length) return isLearned(id) ? "learning" : "new";
     if (cleanDays(id) >= 3) return "ready";
     const last = a[a.length - 1];
     if (last.score >= 0.9 && !last.hint) return "solid";
@@ -653,7 +660,7 @@
 
   const schedule = (id) => {
     const a = atts(id);
-    if (!a.length) { delete S.due[id]; return; }
+    if (!a.length) { if (!isLearned(id)) delete S.due[id]; return; }
     const last = a[a.length - 1];
     let n;
     if (last.score < 0.7) n = 1;
@@ -668,9 +675,9 @@
   const todayList = () => {
     const t = today(), di = dayIndex();
     const reviews = C.essays
-      .filter((e) => atts(e.id).length && S.due[e.id] && diff(S.due[e.id], t) >= 0)
+      .filter((e) => isLearned(e.id) && S.due[e.id] && diff(S.due[e.id], t) >= 0)
       .sort((a, b) => (S.due[a.id] < S.due[b.id] ? -1 : 1));
-    const fresh = C.essays.filter((e) => !atts(e.id).length && (e.day || 1) <= di);
+    const fresh = C.essays.filter((e) => !isLearned(e.id) && (e.day || 1) <= di);
     return { reviews, fresh };
   };
 
@@ -811,7 +818,7 @@
 
     const items = [
       ...reviews.map((e) => row(e, `<span class="tag">Review</span><a class="btn small" href="#/recall/${e.id}">Recall</a>`)),
-      ...fresh.map((e) => row(e, `<span class="tag">New</span><a class="btn small" href="#/learn/${e.id}">Learn</a>`))
+      ...fresh.map((e) => row(e, `<span class="tag">New</span><button class="btn small ghost" data-learned="${e.id}" title="Learned it outside the app? Adds it to your daily review.">Already learned</button><a class="btn small" href="#/learn/${e.id}">Learn</a>`))
     ];
 
     const groups = {};
@@ -834,6 +841,8 @@
           </div>
           <button class="jar-btn" data-act="draw" aria-label="Draw an essay from the jar">${jarSVG()}</button>
         </section>
+
+        ${dailyPanel()}
 
         <section class="panel today">
           <h2>Today</h2>
@@ -867,6 +876,9 @@
           <a class="btn ghost" href="#/recall/${e.id}">Recall it</a>
           <button class="btn ghost" data-act="cover" aria-pressed="false">Cover the answers</button>
         </div>
+        <p class="learned-note">${isLearned(e.id)
+          ? `Learned on ${esc(longDate(learnedOn(e.id)))}, so it’s in your daily review.${!atts(e.id).length && S.learned[e.id] ? ` <button class="linkbtn" data-unlearn="${e.id}">Not learned yet</button>` : ""}`
+          : `Not learned yet. Learned it outside the app? <button class="linkbtn" data-learned="${e.id}">I learned this before today</button>`}</p>
         ${drawBlock(e)}
         ${chainBlock(e)}
         ${storyBlock(e)}
@@ -894,6 +906,7 @@
       stopTicker();
       destroyET();
       const s = steps[L.step];
+      if (s === "whole" && !S.learned[e.id]) markLearned(e.id, false);
       app.innerHTML = `
         ${topbar()}
         <main class="wrap learn">
@@ -958,6 +971,7 @@
       if (s === "whole") return `
         <h2>The whole essay</h2>
         <p>Every section has come back at least once. Now close everything and write the full essay from the question alone, diagram first. This first full recall starts the essay’s review schedule.</p>
+        <p class="callout ok">Essay ${e.id} is now marked as learned. It joins your daily review from tomorrow.</p>
         <p class="hint">Take a 5 to 10 minute break first: stand up, get some water, don’t look at the notes. A short gap makes this recall work harder, and that effort is what makes it stick.</p>
         ${timerHTML(300, "Break", { choices: [5, 10] })}
         <div class="actions"><a class="btn" href="#/recall/${e.id}" data-nudge>Recall the whole essay</a></div>`;
@@ -1046,6 +1060,409 @@
         L.phase = "checked";
       }
       render();
+    };
+    render();
+  };
+
+  /* ---------- daily review ----------
+     Every day: short free-recall questions on every essay you have learned (no multiple choice).
+     All questions are cut from the essay's own chain, section headings and points.
+     Missed questions come back at the end of the session; weak essays get their full recall pulled forward. */
+  const rng = (seed) => {
+    let h = 1779033703 ^ seed.length;
+    for (let i = 0; i < seed.length; i++) { h = Math.imul(h ^ seed.charCodeAt(i), 3432918353); h = (h << 13) | (h >>> 19); }
+    return () => {
+      h = Math.imul(h ^ (h >>> 16), 2246822507); h = Math.imul(h ^ (h >>> 13), 3266489909); h ^= h >>> 16;
+      return (h >>> 0) / 4294967296;
+    };
+  };
+  const shuffle = (arr, r) => { const a = arr.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  const GREEK_NAMES = new Set(["alpha", "beta", "gamma", "delta", "epsilon"]);
+  const HEAD_STOP = new Set(["with", "from", "what", "when", "which", "into", "their", "them", "this", "that", "these", "those"]);
+  const chainLinks = (e) => (e.chain || "").split(/\s*→\s*/).filter(Boolean);
+  const wordCore = (w) => w.replace(/^[(\[{"'“‘]+/, "").replace(/[)\]}"'”’.,;:!?]+$/, "");
+  const toks = (s) => clean(s).split(" ").filter(Boolean);
+  const hasTok = (have, t) => have.some((h) => (t.length <= 3 ? h === t : wordMatch(h, t)));
+  const qToks = (e) => new Set(toks(e.q).filter((t) => t.length >= 4));
+
+  const learnedOn = (id) => S.learned[id] || (atts(id)[0] && atts(id)[0].d) || null;
+  const isLearned = (id) => !!learnedOn(id);
+  const markLearned = (id, before) => {
+    if (!S.learned[id]) S.learned[id] = before ? addDays(today(), -1) : today();
+    if (!atts(id).length && !S.due[id]) S.due[id] = before ? today() : addDays(today(), 1);
+    save();
+  };
+  const unmarkLearned = (id) => { delete S.learned[id]; if (!atts(id).length) delete S.due[id]; save(); };
+
+  // Essays learned before today; the freshest and weakest come first, up to 6 a day.
+  const reviewPool = () => C.essays.filter((e) => { const d = learnedOn(e.id); return d && diff(d, today()) > 0; });
+  const reviewPriority = (e) => {
+    const t = today(), q = S.quiz.last[e.id];
+    let p = diff(learnedOn(e.id), t) <= 3 ? 3 : 0;
+    p += q ? Math.min(diff(q.d, t), 4) + (q.score < 0.7 ? 3 : 0) : 5;
+    const st = status(e.id);
+    if (st === "learning" || st === "shaky") p += 2;
+    if (st === "ready") p -= 1;
+    if (S.due[e.id] && diff(S.due[e.id], t) >= 0) p += 1;
+    return p;
+  };
+  const isWeak = (e) => ["learning", "shaky"].includes(status(e.id)) || (S.quiz.last[e.id] && S.quiz.last[e.id].score < 0.7);
+
+  // ---- question makers (each one is cut from the essay's own material) ----
+  const headingToks = (h) => {
+    const out = [];
+    h.split(/\s+/).forEach((w) => {
+      const core = wordCore(w), caps = /^[A-Z0-9₀-₉⁺]{2,}$/.test(core);
+      toks(core).forEach((t) => { if (!HEAD_STOP.has(t) && (t.length >= 4 || /\d/.test(t) || caps)) out.push(t); });
+    });
+    return [...new Set(out)];
+  };
+  const mkSkeleton = (e) => ({
+    type: "skeleton", e, secs: 40, box: true,
+    prompt: "Type the sections of this essay, in the order you’d write them.",
+    rows: e.sections.map((s) => ({ text: s.h, need: headingToks(s.h) })),
+    grade(answer) {
+      const have = toks(answer);
+      this.rows.forEach((r) => { const m = r.need.filter((t) => hasTok(have, t)).length; r.got = r.need.length ? m >= Math.max(1, Math.ceil(r.need.length * 0.6)) : false; });
+      return this.rows.filter((r) => r.got).length / this.rows.length >= 0.7;
+    },
+    regrade() { return this.rows.filter((r) => r.got).length / this.rows.length >= 0.7; }
+  });
+  const mkSection = (e, si) => {
+    const sec = e.sections[si];
+    const pass = sec.atoms.filter((a) => a.tier === "pass");
+    const counted = pass.length ? pass : sec.atoms;
+    return {
+      type: "section", e, secs: 90, box: true, heading: sec.h,
+      prompt: `Write everything that goes under “${sec.h}”.`,
+      rows: sec.atoms.map((a) => ({ text: a.s, atom: a, tier: a.tier })),
+      grade(answer) {
+        const T = tokenize(answer);
+        this.rows.forEach((r) => { r.got = !!checkAtom(T, r.atom); });
+        return this.regrade();
+      },
+      regrade() { return counted.filter((a) => this.rows.find((r) => r.atom === a).got).length / counted.length >= 0.7; }
+    };
+  };
+  const mkGap = (e, r) => {
+    const links = chainLinks(e), keys = keyTokens(e.atoms), qt = qToks(e);
+    const cands = [];
+    links.forEach((link, li) => {
+      const ctx = new Set([...toks(links[li - 1] || ""), ...toks(links[li + 1] || "")]);
+      link.split(/\s+/).forEach((w, wi) => {
+        const core = wordCore(w), ct = toks(core);
+        if (!ct.length || /^(I|II|III|IV|V|VI)$/.test(core) || core.replace(/[^a-z]/gi, "").length < 4) return;
+        if (!isKeyWord(core, keys)) return;
+        if (ct.some((t) => qt.has(t) || ctx.has(t))) return;
+        if (link.split(/\s+/).filter((x, i) => i !== wi && toks(wordCore(x)).join() === ct.join()).length) return;
+        cands.push({ li, wi, core });
+      });
+    });
+    if (!cands.length) return null;
+    const c = cands[Math.floor(r() * cands.length)];
+    const words = links[c.li].split(/\s+/);
+    const shown = (mark) => words.map((w, i) => {
+      if (i !== c.wi) return esc(w);
+      const core = wordCore(w), at = w.indexOf(core);
+      return esc(w.slice(0, at)) + mark(core) + esc(w.slice(at + core.length));
+    }).join(" ");
+    return {
+      type: "gap", e, secs: 15, box: false, answerText: c.core,
+      prompt: "Fill the gap in the chain.",
+      context: { before: links[c.li - 1] || null, after: links[c.li + 1] || null },
+      html: shown(() => `<span class="blank" aria-label="gap"></span>`),
+      reveal: (ok) => shown((core) => `<mark class="${ok ? "yes" : "no"}">${esc(core)}</mark>`),
+      grade(answer) {
+        const need = toks(c.core).filter((t) => (t.length >= 2 || /\d/.test(t)) && !GREEK_NAMES.has(t));
+        const have = toks(answer);
+        if (!need.length) return false;
+        if (have.join("") === toks(c.core).join("")) return true;
+        return need.every((t) => hasTok(have, t));
+      }
+    };
+  };
+  const linkTargets = (link, keys) => {
+    const set = new Set();
+    link.split(/\s+/).forEach((w) => {
+      const core = wordCore(w);
+      if (isKeyWord(core, keys)) toks(core).forEach((t) => { if ((t.length >= 3 || /\d/.test(t)) && !GREEK_NAMES.has(t)) set.add(t); });
+    });
+    if (!set.size) toks(link).forEach((t) => { if (t.length >= 5) set.add(t); });
+    return [...set];
+  };
+  const mkNext = (e, r) => {
+    const links = chainLinks(e), keys = keyTokens(e.atoms);
+    if (links.length < 2) return null;
+    const ks = [];
+    for (let k = -1; k < links.length - 1; k++) if (linkTargets(links[k + 1], keys).length) ks.push(k);
+    if (!ks.length) return null;
+    const k = ks[Math.floor(r() * ks.length)];
+    const target = links[k + 1], need = linkTargets(target, keys);
+    return {
+      type: "next", e, secs: 25, box: true,
+      prompt: k < 0 ? "How does the chain start, right after the question?" : "What comes next in the chain?",
+      context: { before2: k > 0 ? links[k - 1] : null, before: k >= 0 ? links[k] : null, after: links[k + 2] || null },
+      target, need,
+      grade(answer) {
+        const have = toks(answer);
+        this.hit = this.need.filter((t) => hasTok(have, t));
+        return this.hit.length >= Math.max(1, Math.ceil(this.need.length * 0.5));
+      }
+    };
+  };
+  const mkWhich = (pool, r) => {
+    const opts = [];
+    pool.forEach((e) => {
+      const keys = keyTokens(e.atoms), qt = qToks(e);
+      chainLinks(e).forEach((l) => {
+        const kt = linkTargets(l, keys);
+        if (kt.length >= 2 && !toks(l).some((t) => qt.has(t))) opts.push({ e, l });
+      });
+    });
+    if (!opts.length) return null;
+    const o = opts[Math.floor(r() * opts.length)];
+    return {
+      type: "which", e: o.e, secs: 15, box: false, link: o.l,
+      prompt: "Which essay does this belong to? Type its number.",
+      grade(answer) { return parseInt(String(answer).replace(/\D+/g, ""), 10) === o.e.id; }
+    };
+  };
+
+  const buildReview = (salt, exclude) => {
+    const t = today(), skip = new Set(exclude || []);
+    const pool = reviewPool().filter((e) => !skip.has(e.id));
+    if (!pool.length) return [];
+    const r = rng(`${t}:${user ? user.id : "guest"}:${salt}`);
+    const chosen = pool.map((e) => ({ e, p: reviewPriority(e) + r() * 0.5 }))
+      .sort((a, b) => b.p - a.p).slice(0, 6).map((x) => x.e);
+    const per = Math.max(2, Math.min(4, Math.ceil(8 / chosen.length)));
+    const day = diff("2026-01-01", t);
+    const first = [], rest = [];
+    chosen.forEach((e) => {
+      first.push(mkSkeleton(e));
+      let kinds = ["gap", "next", "section"];
+      const start = (day + e.id) % 3;
+      kinds = [...kinds.slice(start), ...kinds.slice(0, start)].slice(0, per - 1);
+      if (isWeak(e) && !kinds.includes("section")) kinds[kinds.length - 1] = "section";
+      kinds.forEach((k) => {
+        const it = k === "gap" ? mkGap(e, r) : k === "next" ? mkNext(e, r) : mkSection(e, (day + e.id + rest.length) % e.sections.length);
+        if (it) rest.push(it);
+      });
+    });
+    if (reviewPool().length >= 3) { const w = mkWhich(reviewPool(), r); if (w) rest.push(w); }
+    // interleave: no two questions from the same essay back to back where possible
+    let mixed = shuffle(rest, r);
+    for (let i = 1; i < mixed.length; i++) {
+      if (mixed[i].e.id === mixed[i - 1].e.id) {
+        const j = mixed.findIndex((x, n) => n > i && x.e.id !== mixed[i - 1].e.id);
+        if (j > 0) [mixed[i], mixed[j]] = [mixed[j], mixed[i]];
+      }
+    }
+    return [...shuffle(first, r), ...mixed];
+  };
+  const streak = () => {
+    let n = 0, d = today();
+    if (!(S.quiz.days[d] && S.quiz.days[d].done)) d = addDays(d, -1);
+    while (S.quiz.days[d] && S.quiz.days[d].done) { n++; d = addDays(d, -1); }
+    return n;
+  };
+  const minutes = (items) => Math.max(1, Math.round(items.reduce((s, it) => s + it.secs, 0) / 60));
+  const essayList = (ids) => ids.map((id) => "Q" + id).join(", ");
+
+  const dailyPanel = () => {
+    const pool = reviewPool(), t = today(), rec = S.quiz.days[t], st = streak();
+    const streakHTML = st ? `<p class="streak"><span>${st}</span> ${st === 1 ? "day" : "days"} in a row</p>` : "";
+    if (!pool.length) {
+      const todayOnly = C.essays.filter((e) => learnedOn(e.id) === t);
+      return `
+        <section class="panel daily">
+          <div class="daily-head"><h2>Daily review</h2>${streakHTML}</div>
+          <p class="empty">${todayOnly.length
+            ? `You learned ${essayList(todayOnly.map((e) => e.id))} today. Its first daily review is tomorrow: a night’s sleep in between makes the review count more.`
+            : "Starts the day after you learn your first essay. Learned one already? Press “Already learned” next to it in the list."}</p>
+        </section>`;
+    }
+    if (rec && rec.done) {
+      const left = pool.filter((e) => !rec.essays.includes(e.id));
+      return `
+        <section class="panel daily done">
+          <div class="daily-head"><h2>Daily review</h2>${streakHTML}</div>
+          <p>Done for today: ${rec.first} of ${rec.n} right first time, on ${essayList(rec.essays)}.</p>
+          ${left.length ? `<div class="actions"><a class="btn ghost" href="#/daily/more">Review ${left.length} more ${left.length === 1 ? "essay" : "essays"}</a></div>` : ""}
+        </section>`;
+    }
+    const items = buildReview(0, []);
+    const ids = [...new Set(items.map((it) => it.e.id))].sort((a, b) => a - b);
+    return `
+      <section class="panel daily">
+        <div class="daily-head"><h2>Daily review</h2>${streakHTML}</div>
+        <p>${items.length} quick questions on ${essayList(ids)}, everything you’ve learned. About ${minutes(items)} minutes. Type your answers; no multiple choice.</p>
+        <div class="actions"><a class="btn" href="#/daily">Start daily review</a></div>
+      </section>`;
+  };
+
+  const viewDaily = (more) => {
+    const t = today();
+    const done = (S.quiz.days[t] && S.quiz.days[t].essays) || [];
+    const items = buildReview(more ? 1 + Object.keys(S.quiz.days).length : 0, more ? done : []);
+    if (!items.length) {
+      app.innerHTML = `${topbar()}<main class="wrap narrow"><h1 class="page-title">Daily review</h1>
+        <p class="lede">Nothing to review yet. Your daily review starts the day after you learn your first essay.</p>
+        <div class="actions"><a class="btn" href="#/">Back to today</a></div></main>${footer()}`;
+      return;
+    }
+    const queue = items.map((it, i) => ({ it, i, retry: false }));
+    const first = {};
+    let pos = 0, cur = null;
+
+    const cueHTML = (e) => `<p class="cue-line"><span>Q${e.id}</span> ${esc(e.q)}</p>`;
+    const flow = (parts) => parts.filter((p) => p != null).join(`<span class="chain-arrow" aria-hidden="true">→</span>`);
+    const body = (it) => {
+      if (it.type === "gap") return `<p class="qflow">${flow([it.context.before ? `<span class="dim">${esc(it.context.before)}</span>` : `<span class="dim">${esc(it.e.q.replace(/\.$/, ""))}</span>`, it.html, it.context.after ? `<span class="dim">${esc(it.context.after)}</span>` : null])}</p>`;
+      if (it.type === "next") return `<p class="qflow">${flow([it.context.before2 ? `<span class="dim">${esc(it.context.before2)}</span>` : null, it.context.before ? esc(it.context.before) : `<span class="dim">${esc(it.e.q.replace(/\.$/, ""))}</span>`, `<span class="blank wide" aria-label="next link"></span>`])}</p>`;
+      if (it.type === "which") return `<blockquote class="qquote">${esc(it.link)}</blockquote>`;
+      return "";
+    };
+    const feedback = (it, ok) => {
+      const head = `<p class="fb-head">${ok ? "Right." : "Not quite."}</p>`;
+      if (it.type === "gap") return head + `<p class="qflow">${it.reveal(ok)}</p>`;
+      if (it.type === "which") return head + `<p>It’s <strong>Q${it.e.id}</strong>: ${esc(it.e.q)}</p>`;
+      if (it.type === "next") {
+        const marked = it.target.split(/\s+/).map((w) => {
+          const core = wordCore(w), tk = toks(core).filter((x) => it.need.includes(x));
+          if (!tk.length) return esc(w);
+          const at = w.indexOf(core);
+          return esc(w.slice(0, at)) + `<mark class="${tk.every((x) => it.hit.includes(x)) ? "yes" : "no"}">${esc(core)}</mark>` + esc(w.slice(at + core.length));
+        }).join(" ");
+        return head + `<p class="qflow"><span class="chain-arrow" aria-hidden="true">→</span>${marked}${it.context.after ? `<span class="chain-arrow" aria-hidden="true">→</span><span class="dim">${esc(it.context.after)}</span>` : ""}</p>`;
+      }
+      const got = it.rows.filter((r) => r.got).length;
+      const label = it.type === "skeleton" ? `${got} of ${it.rows.length} sections` : `${it.rows.filter((r) => r.got && r.tier === "pass").length} of ${it.rows.filter((r) => r.tier === "pass").length} pass points`;
+      return `<p class="fb-head">${ok ? "Right." : "Not quite."} <span class="fb-count">${label}</span></p>
+        <p class="hint">Tap a line if the check missed something you did write.</p>
+        <ul class="atoms learn-check">${it.rows.map((r, ri) => `
+          <li><button class="check-row ${r.got ? "got" : "missed"} tier-${r.tier || "pass"}" data-row="${ri}" aria-pressed="${!!r.got}">
+            <span class="mark" aria-hidden="true">${r.got ? "✓" : r.tier === "boost" ? "○" : "⊗"}</span>
+            <span class="atom-body"><span class="atom-text"><span class="hl">${esc(r.text)}</span></span>${it.type === "section" ? `<span class="src">${r.tier === "boost" ? "Boost" : "Pass"}</span>` : ""}</span>
+          </button></li>`).join("")}</ul>`;
+    };
+
+    const render = () => {
+      if (pos >= queue.length) return finish();
+      cur = { q: queue[pos], checked: false, ok: false };
+      const it = cur.q.it;
+      const total = items.length, n = Math.min(pos + 1, total);
+      app.innerHTML = `
+        ${topbar()}
+        <main class="wrap narrow daily-page">
+          <p class="meta">${cur.q.retry ? `Second go: you missed this one earlier. ${queue.length - pos} left.` : `Daily review, question ${n} of ${total}.`}</p>
+          <ol class="steps" aria-hidden="true">${queue.map((_, i) => `<li class="${i < pos ? "done" : i === pos ? "now" : ""}"></li>`).join("")}</ol>
+          <section class="qcard">
+            ${it.type === "which" ? "" : cueHTML(it.e)}
+            <h1 class="qprompt">${esc(it.prompt)}</h1>
+            ${body(it)}
+            <label class="sr" for="qans">Your answer</label>
+            ${it.box
+              ? `<textarea id="qans" class="answer-box short" spellcheck="false" autocomplete="off" placeholder="${it.type === "section" ? "Everything you remember, any order. Tab types an arrow." : "Your answer"}"></textarea>`
+              : `<input id="qans" class="quiz-input" ${it.type === "which" ? 'inputmode="numeric"' : ""} spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="${it.type === "which" ? "Essay number" : "The missing word"}">`}
+            <div class="actions" id="qact">
+              <button class="btn" data-q="check">Check</button>
+              <button class="btn ghost" data-q="skip">I don’t know</button>
+            </div>
+            <div id="qfb" class="qfb" hidden></div>
+          </section>
+          <p class="kbd-hint">${it.box ? "Ctrl + Enter checks." : "Enter checks."} Enter again goes to the next question.</p>
+        </main>`;
+      const a = document.getElementById("qans");
+      a.focus();
+      a.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" && (!it.box || ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); check(false); }
+      });
+    };
+    const showFeedback = () => {
+      const it = cur.q.it, fb = document.getElementById("qfb");
+      fb.hidden = false;
+      fb.className = "qfb " + (cur.ok ? "ok" : "miss");
+      const flip = it.type === "gap" || it.type === "next" || it.type === "which";
+      fb.innerHTML = feedback(it, cur.ok) + `
+        <div class="actions">
+          <button class="btn" data-q="next">${pos + 1 >= queue.length && (cur.ok || cur.q.retry) ? "Finish" : "Next"}</button>
+          ${flip ? `<button class="btn ghost" data-q="flip">${cur.ok ? "Count it as wrong" : "I was right"}</button>` : ""}
+        </div>`;
+      document.getElementById("qact").hidden = true;
+      fb.querySelector("[data-q=next]").focus({ preventScroll: true });
+    };
+    const check = (skip) => {
+      if (!cur || cur.checked) return;
+      const it = cur.q.it, a = document.getElementById("qans");
+      cur.checked = true;
+      if (skip) { if (it.rows) it.rows.forEach((r) => { r.got = false; }); cur.ok = false; }
+      else cur.ok = it.grade(a.value);
+      a.readOnly = true;
+      showFeedback();
+    };
+    const next = () => {
+      const it = cur.q.it;
+      if (!cur.q.retry) first[cur.q.i] = cur.ok;
+      if (!cur.ok && !cur.q.retry) queue.push({ it: Object.assign(Object.create(Object.getPrototypeOf(it)), it, { rows: it.rows ? it.rows.map((r) => Object.assign({}, r, { got: false })) : undefined }), i: cur.q.i, retry: true });
+      pos++;
+      window.scrollTo(0, 0);
+      render();
+    };
+
+    const finish = () => {
+      const per = {};
+      items.forEach((it, i) => { const p = (per[it.e.id] = per[it.e.id] || { n: 0, ok: 0 }); p.n++; if (first[i]) p.ok++; });
+      const firstOK = items.filter((_, i) => first[i]).length;
+      const moved = [];
+      Object.keys(per).forEach((id) => {
+        const p = per[id], score = p.ok / p.n;
+        S.quiz.last[id] = { d: t, score };
+        if (score < 0.6 && (!S.due[id] || diff(t, S.due[id]) > 1)) { S.due[id] = addDays(t, 1); moved.push(Number(id)); }
+      });
+      const rec = S.quiz.days[t] || { done: true, n: 0, first: 0, essays: [] };
+      rec.done = true; rec.n += items.length; rec.first += firstOK;
+      rec.essays = [...new Set([...rec.essays, ...Object.keys(per).map(Number)])];
+      S.quiz.days[t] = rec;
+      save();
+      const st = streak();
+      const left = reviewPool().filter((e) => !rec.essays.includes(e.id));
+      app.innerHTML = `
+        ${topbar()}
+        <main class="wrap narrow daily-page">
+          <h1 class="page-title">Done for today</h1>
+          <p class="lede">${firstOK} of ${items.length} right first time.${st ? ` ${st} ${st === 1 ? "day" : "days"} in a row.` : ""}</p>
+          <ul class="daily-sum">${Object.keys(per).map((id) => {
+            const p = per[id], e = E[id];
+            return `<li><span class="ds-q"><b>Q${id}</b> ${esc(e.q)}</span><span class="ds-bar" aria-hidden="true"><i style="width:${Math.round((100 * p.ok) / p.n)}%"></i></span><span class="ds-n">${p.ok} of ${p.n}</span></li>`;
+          }).join("")}</ul>
+          ${moved.length ? `<p class="callout">${essayList(moved)} ${moved.length === 1 ? "was" : "were"} weak today, so the full recall moves to tomorrow.</p>` : ""}
+          <p class="hint">Everything you missed came back once at the end. Tomorrow’s review mixes in new angles on the same essays.${user ? "" : " You’re a guest, so this isn’t saved."}</p>
+          <div class="actions">
+            <a class="btn" href="#/">Back to today</a>
+            ${left.length ? `<a class="btn ghost" href="#/daily/more">Review ${left.length} more ${left.length === 1 ? "essay" : "essays"}</a>` : ""}
+          </div>
+        </main>
+        ${footer()}`;
+    };
+
+    app.onclick = (ev) => {
+      if (!app.querySelector(".daily-page") || !cur) return;
+      const b = ev.target.closest("[data-q], [data-row]");
+      if (!b) return;
+      const it = cur.q.it;
+      if (b.dataset.row != null && cur.checked && it.rows) {
+        const r = it.rows[Number(b.dataset.row)];
+        r.got = !r.got;
+        cur.ok = it.regrade();
+        const y = window.scrollY; showFeedback(); window.scrollTo(0, y);
+        return;
+      }
+      const act = b.dataset.q;
+      if (act === "check") check(false);
+      else if (act === "skip") check(true);
+      else if (act === "flip") { cur.ok = !cur.ok; showFeedback(); }
+      else if (act === "next") next();
     };
     render();
   };
@@ -1322,6 +1739,20 @@
         </section>
 
         <section class="block">
+          <h2>Daily review, every day</h2>
+          <p>From the day after you learn an essay, it’s in your daily review on the home page. About 5 to 8 minutes of short typed questions, all cut from the essay’s own chain, sections and points:</p>
+          <ul>
+            <li><strong>Sections:</strong> from the question alone, type the essay’s sections. That’s the skeleton you write from in the exam.</li>
+            <li><strong>Fill the gap:</strong> a piece of the chain with one key term missing.</li>
+            <li><strong>What comes next:</strong> a link of the chain; type the next one. That trains the order you write in.</li>
+            <li><strong>Write the section:</strong> one section from memory, checked point by point.</li>
+            <li><strong>Which essay:</strong> a fact; type its essay number, so similar essays don’t blur together.</li>
+          </ul>
+          <p>No multiple choice: picking an answer from options is recognition, and your exam asks you to produce the essay from nothing. Anything you miss comes back once at the end. An essay that goes badly gets its full recall moved to tomorrow. Up to 6 essays a day, freshest and weakest first; once you’ve learned more than that, they rotate, and “Review more” covers the rest.</p>
+          <p class="hint">Learned an essay outside the app? Press “Already learned” next to it, or “I learned this before today” on its notes page.</p>
+        </section>
+
+        <section class="block">
           <h2>A review: press Recall</h2>
           <ol>
             <li><strong>Question only.</strong> Say how sure you feel, sketch the diagram on paper, type everything.</li>
@@ -1346,6 +1777,7 @@
             <li><strong>Feedback and a second go.</strong> Finding the gap yourself, then trying again, fixes it better than just reading the answer.</li>
             <li><strong>Pictures and stories.</strong> The diagram and the story give each fact a hook.</li>
             <li><strong>Reasons, not lists.</strong> Each link in a chain says why the next one happens. Asking “why?” at every step (elaborative interrogation) makes facts stick far better than memorising them blind.</li>
+            <li><strong>Every day, a little.</strong> A few minutes of recall on everything learned beats a big re-read later; each successful retrieval makes the next one easier and slows forgetting.</li>
             <li><strong>Fading cues.</strong> EssayType removes help step by step (all text, then gaps, then first letters), so recall gets harder just as you get better.</li>
             <li><strong>Honest confidence.</strong> Rating how sure you feel shows which essays only feel familiar.</li>
           </ul>
@@ -1475,7 +1907,7 @@
         try {
           const data = JSON.parse(reader.result);
           if (!valid(data)) throw new Error("bad");
-          S = data; save();
+          S = norm(data); save();
           msg.textContent = `Progress imported into ${user.name}.`;
         } catch (err) {
           msg.textContent = "That file isn’t an Essay Jar progress file. Nothing was changed.";
@@ -1536,6 +1968,13 @@
         if (el.dataset.state === "done") paintTimer(el, Number(el.dataset.secs));
         runTimer(el, nudgeNext);
       }
+      return;
+    }
+    const lb = ev.target.closest("[data-learned], [data-unlearn]");
+    if (lb) {
+      if (lb.dataset.learned) markLearned(Number(lb.dataset.learned), true);
+      else unmarkLearned(Number(lb.dataset.unlearn));
+      route();
       return;
     }
     const sw = ev.target.closest("[data-user]");
@@ -1615,6 +2054,7 @@
     if (view === "study" && e) return viewStudy(e);
     if (view === "learn" && e) return viewLearn(e);
     if (view === "type" && e) return viewType(e);
+    if (view === "daily") return viewDaily(arg === "more");
     if (view === "recall" && e) return viewRecall(e, "practice");
     if (view === "exam" && e) return viewRecall(e, "exam");
     if (view === "exam") return viewExamStart();
