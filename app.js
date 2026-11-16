@@ -433,6 +433,17 @@
     }));
     E[e.id] = e;
   });
+  const PWS = (window.PATHWAYS && window.PATHWAYS.items) || [];
+  PWS.forEach((e) => {
+    e.atoms = [];
+    e.sections.forEach((sec, si) => sec.atoms.forEach((a, ai) => {
+      a.id = si + "." + ai; a.sec = si; a.groups = parseKeys(a.k); e.atoms.push(a);
+    }));
+    E[e.id] = e;
+  });
+  const isPW = (e) => !!(e && e.kind === "pathway");
+  const qn = (e) => isPW(e) ? "P" + e.num : "Q" + (e ? e.id : "");
+  const en = (e) => isPW(e) ? "Pathway " + e.num : "Essay " + e.id;
   const PLAN_DAYS = Math.max(...C.essays.map((e) => e.day || 1));
   const lectureName = (l) => (C.lectures && C.lectures[l]) || l;
 
@@ -520,9 +531,9 @@
 
     host.innerHTML = `
       <div class="et">
-        <span class="et-mark" aria-hidden="true">${esc(opts.cue.num)}</span>
+        <span class="et-mark" aria-hidden="true">${esc(String(opts.cue.num).replace(/^Q/, ""))}</span>
         <div class="et-top">
-          <p class="et-cue"><span class="et-qnum">Q${esc(opts.cue.num)}</span><span class="et-qtext">${esc(opts.cue.q)}</span><span class="et-qsec"></span></p>
+          <p class="et-cue"><span class="et-qnum">${esc(String(opts.cue.num).replace(/^(\d)/, "Q$1"))}</span><span class="et-qtext">${esc(opts.cue.q)}</span><span class="et-qsec"></span></p>
           <div class="et-config">
             ${passages.length > 1 ? `<div class="et-group" role="group" aria-label="What to type">${passages.map((p, i) =>
               `<button type="button" data-et-p="${i}" aria-pressed="${i === 0}">${esc(p.label)}</button>`).join("")}</div>` : ""}
@@ -854,7 +865,8 @@
     <header class="topbar">
       <a class="brand" href="#/">Essay Jar</a>
       <nav>
-        <a href="#/">Today</a>
+        <a href="#/">Essays</a>
+        <a href="#/pathways">Pathways</a>
         ${ONLINE && user ? `<a href="#/board">Leaderboard</a>` : ""}
         ${user && user.admin ? `<a href="#/admin">Admin</a>` : ""}
         <a href="#/how">How to study</a>
@@ -900,7 +912,7 @@
       const y = 228 - r * 20 + ((i * 53) % 5);
       const rot = ((i * 47) % 34) - 17;
       const st = status(e.id);
-      return `<rect class="slip slip-${st}" x="${x}" y="${y}" width="31" height="12" rx="1.5" transform="rotate(${rot} ${x + 15} ${y + 6})"><title>Essay ${e.id}: ${LABEL[st]}</title></rect>`;
+      return `<rect class="slip slip-${st}" x="${x}" y="${y}" width="31" height="12" rx="1.5" transform="rotate(${rot} ${x + 15} ${y + 6})"><title>${en(e)}: ${LABEL[st]}</title></rect>`;
     }).join("");
     return `
       <svg class="jar" viewBox="0 0 220 262" aria-hidden="true" focusable="false">
@@ -924,10 +936,27 @@
         </li>`).join("")}
     </ul>`;
 
-  const drawBlock = (e) => `
+  const pwMap = (e, opts = {}) => `
+    <div class="pw-map${opts.blank ? " blank" : ""}" style="--lanes:${e.map.length}">
+      ${e.map.map((lane) => `
+        <div class="pw-lane">
+          <h3>${esc(lane.h)}</h3>
+          ${lane.rows.map((r) => r.m
+            ? `<div class="pw-m"><b>${esc(r.m)}</b>${r.f ? `<code>${esc(r.f)}</code>` : ""}${r.note ? `<small>${esc(r.note)}</small>` : ""}</div>`
+            : `<div class="pw-z"><span class="pw-ar" aria-hidden="true"></span><div class="pw-zt">${r.n !== "" && r.n != null ? `<i>${esc(String(r.n))}</i>` : ""}<b>${esc(r.e)}</b>${r.d ? `<small>${esc(r.d)}</small>` : ""}${r.x ? `<span class="pw-x">✗ ${esc(r.x)}</span>` : ""}</div></div>`).join("")}
+        </div>`).join("")}
+    </div>
+    ${e.foot ? `<ul class="pw-foot">${e.foot.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}`;
+
+  const drawBlock = (e) => isPW(e) ? `
+    <section class="block draw-first pw">
+      <h2>The pathway</h2>
+      ${pwMap(e)}
+      <p class="hint">${esc(e.draw)}</p>
+    </section>` : `
     <section class="block draw-first">
       <h2>Draw this first</h2>
-      ${e.img ? `<img src="${esc(e.img)}" alt="Professor’s diagram for essay ${e.id}">` : ""}
+      ${e.img ? `<img src="${esc(e.img)}" alt="Professor’s diagram for ${en(e).toLowerCase()}">` : ""}
       <p>${esc(e.draw)}</p>
     </section>`;
 
@@ -942,6 +971,46 @@
     ...(e.hook ? [{ label: "story", text: e.hook, keys: keyTokens(e.atoms) }] : [])
   ];
   const storyBlock = (e) => e.hook ? `<section class="block story"><h2>The story</h2><p>${esc(e.hook)}</p></section>` : "";
+
+  /* ---------- sections: essays | pathways ---------- */
+  const sectionTabs = (on) => `
+    <nav class="sect-tabs" aria-label="Sections">
+      <a href="#/" class="${on === "essays" ? "on" : ""}">Essays <span>${C.essays.filter((e) => isDown(e.id)).length}/${C.essays.length}</span></a>
+      <a href="#/pathways" class="${on === "pw" ? "on" : ""}">Pathways <span>${PWS.filter((e) => isDown(e.id)).length}/${PWS.length}</span></a>
+    </nav>`;
+  const viewPathways = () => {
+    const down = PWS.filter((e) => isDown(e.id)).length;
+    app.innerHTML = `
+      ${topbar()}
+      <main class="wrap">
+        ${guestNotice()}
+        ${sectionTabs("pw")}
+        <section class="pw-hero">
+          <h1>The ${PWS.length} pathways</h1>
+          <p class="lede">In the exam you draw these from memory: every substrate, every enzyme with its number and cofactors, and the disease when it’s missing. Each pathway is a boss. Look at the map once, then play: say each next step before you see it.</p>
+          <p class="hero-stats"><span><b>${down}</b> of ${PWS.length} pathway bosses defeated</span></p>
+          <div class="actions">
+            <button class="btn" data-act="pw-random">Random pathway boss</button>
+          </div>
+        </section>
+        <section class="roster">
+          <ul class="bosses pw-bosses">${PWS.map(bossCard).join("")}</ul>
+        </section>
+        <section class="pw-list">
+          ${PWS.map((e) => `
+            <article class="pw-item">
+              <p class="pw-num">${qn(e)}</p>
+              <h2><a href="#/study/${e.id}">${esc(e.q)}</a></h2>
+              <div class="actions">
+                <a class="btn small" href="#/play/${e.id}">Play</a>
+                <a class="btn small ghost" href="#/study/${e.id}">See the map</a>
+                <a class="btn small ghost" href="#/type/${e.id}">Type the pathway</a>
+              </div>
+            </article>`).join("")}
+        </section>
+      </main>
+      ${footer()}`;
+  };
 
   /* ---------- home ---------- */
   const viewHome = () => {
@@ -1001,6 +1070,7 @@
         </section>
 
         <section class="roster">
+          ${sectionTabs("essays")}
           <div class="roster-head">
             <h2>The ${C.essays.length} bosses</h2>
             <p>${C.essays.filter((e) => isDown(e.id)).length} of ${C.essays.length} defeated</p>
@@ -1020,7 +1090,7 @@
     app.innerHTML = `
       ${topbar()}
       <main class="wrap study">
-        <p class="meta">Essay ${e.id}, from ${esc(lectureName(e.lecture))}.${plan} Status: ${LABEL[st]}.</p>
+        <p class="meta">${isPW(e) ? `${en(e)} of ${PWS.length}, draw it from memory in the exam.` : `Essay ${e.id}, from ${esc(lectureName(e.lecture))}.${plan}`} Status: ${LABEL[st]}.</p>
         <h1 class="question">${esc(e.q)}</h1>
         <div class="actions">
           <a class="btn" href="#/play/${e.id}">Play</a>
@@ -1036,7 +1106,7 @@
         ${chainBlock(e)}
         ${storyBlock(e)}
         <section class="points">
-          <h2 class="points-title">What the essay must contain</h2>
+          <h2 class="points-title">${isPW(e) ? "What your drawing must contain" : "What the essay must contain"}</h2>
           <p class="hint">Pass points are what you need to pass. Boost points make the answer strong. When covered, tap a line to reveal it.</p>
           ${e.sections.map((s) => `<div class="sec"><h3>${esc(s.h)}</h3>${atomList(s.atoms)}</div>`).join("")}
         </section>
@@ -1064,7 +1134,7 @@
         ${topbar()}
         <main class="wrap learn">
           ${guestNotice()}
-          <p class="meta">Learning essay ${e.id}. Step ${L.step + 1} of ${steps.length}: ${esc(stepName(s))}.</p>
+          <p class="meta">Learning ${en(e).toLowerCase()}. Step ${L.step + 1} of ${steps.length}: ${esc(stepName(s))}.</p>
           <ol class="steps" aria-hidden="true">${steps.map((_, i) => `<li class="${i < L.step ? "done" : i === L.step ? "now" : ""}"></li>`).join("")}</ol>
           <h1 class="question">${esc(e.q)}</h1>
           <section class="stage">${stage(s)}</section>
@@ -1074,7 +1144,7 @@
         const passages = s === "draw"
           ? chainPassages(e)
           : [{ label: "points", head: secs[s].h, text: (L.targets || secs[s].atoms).map((a) => a.s).join(" "), keys: keyTokens(L.targets || secs[s].atoms) }];
-        ET = mountEssayType(host, { passages, cue: { num: e.id, q: e.q }, onLastRound: () => nudgeNext(host) });
+        ET = mountEssayType(host, { passages, cue: { num: qn(e), q: e.q }, onLastRound: () => nudgeNext(host) });
         window.scrollTo(0, Math.max(0, host.getBoundingClientRect().top + window.scrollY - 96));
       }
       const box = app.querySelector(".stage textarea");
@@ -1124,7 +1194,7 @@
       if (s === "whole") return `
         <h2>The whole essay</h2>
         <p>Every section has come back at least once. Now close everything and write the full essay from the question alone, diagram first. This first full recall starts the essay’s review schedule.</p>
-        <p class="callout ok">Essay ${e.id} is now marked as learned. It joins your daily review from tomorrow.</p>
+        <p class="callout ok">${en(e)} is now marked as learned. It joins your daily review from tomorrow.</p>
         <p class="hint">Take a 5 to 10 minute break first: stand up, get some water, don’t look at the notes. A short gap makes this recall work harder, and that effort is what makes it stick.</p>
         ${timerHTML(300, "Break", { choices: [5, 10] })}
         <div class="actions"><a class="btn" href="#/recall/${e.id}" data-nudge>Recall the whole essay</a></div>`;
@@ -1155,7 +1225,7 @@
         <p class="hint">${L.targets
           ? `Type the ${plural(L.targets.length, "point")} you missed. Your own words, any order.`
           : `Type everything from this section: ${plural(passTotal, "pass point")}${sec.atoms.length > passTotal ? ` and ${plural(sec.atoms.length - passTotal, "boost point")}` : ""}. Your own words, any order.`}</p>
-        <p class="cue-line"><span>Q${e.id}</span> ${esc(e.q)} <b>→ ${esc(sec.h)}</b></p>
+        <p class="cue-line"><span>${qn(e)}</span> ${esc(e.q)} <b>→ ${esc(sec.h)}</b></p>
         <label class="sr" for="secBox">Your recall</label>
         <textarea id="secBox" class="answer-box short" spellcheck="false" autocomplete="off"></textarea>
         <div class="actions"><button class="btn" data-l="check">Check</button></div>`;
@@ -1248,7 +1318,7 @@
   const unmarkLearned = (id) => { delete S.learned[id]; if (!atts(id).length) delete S.due[id]; save(); };
 
   // Essays learned before today; the freshest and weakest come first, up to 6 a day.
-  const reviewPool = () => C.essays.filter((e) => { const d = learnedOn(e.id); return d && diff(d, today()) > 0; });
+  const reviewPool = () => [...C.essays, ...PWS].filter((e) => { const d = learnedOn(e.id); return d && diff(d, today()) > 0; });
   const reviewPriority = (e) => {
     const t = today(), q = S.quiz.last[e.id];
     let p = diff(learnedOn(e.id), t) <= 3 ? 3 : 0;
@@ -1375,7 +1445,7 @@
       const keys = keyTokens(e.atoms), qt = qToks(e);
       chainLinks(e).forEach((l) => {
         const kt = linkTargets(l, keys);
-        if (kt.length >= 2 && !toks(l).some((t) => qt.has(t))) opts.push({ e, l });
+        if (!isPW(e) && kt.length >= 2 && !toks(l).some((t) => qt.has(t))) opts.push({ e, l });
       });
     });
     if (!opts.length) return null;
@@ -1427,7 +1497,7 @@
     const pool = reviewPool(), t = today(), rec = S.quiz.days[t], st = streak();
     const streakHTML = st ? `<p class="streak"><span>${st}</span> ${st === 1 ? "day" : "days"} in a row</p>` : "";
     if (!pool.length) {
-      const todayOnly = C.essays.filter((e) => learnedOn(e.id) === t);
+      const todayOnly = [...C.essays, ...PWS].filter((e) => learnedOn(e.id) === t);
       return `
         <section class="panel daily">
           <div class="daily-head"><h2>Daily review</h2>${streakHTML}</div>
@@ -1469,7 +1539,7 @@
     const first = {};
     let pos = 0, cur = null;
 
-    const cueHTML = (e) => `<p class="cue-line"><span>Q${e.id}</span> ${esc(e.q)}</p>`;
+    const cueHTML = (e) => `<p class="cue-line"><span>${qn(e)}</span> ${esc(e.q)}</p>`;
     const flow = (parts) => parts.filter((p) => p != null).join(`<span class="chain-arrow" aria-hidden="true">→</span>`);
     const body = (it) => {
       if (it.type === "gap") return `<p class="qflow">${flow([it.context.before ? `<span class="dim">${esc(it.context.before)}</span>` : `<span class="dim">${esc(it.e.q.replace(/\.$/, ""))}</span>`, it.html, it.context.after ? `<span class="dim">${esc(it.context.after)}</span>` : null])}</p>`;
@@ -1480,7 +1550,7 @@
     const feedback = (it, ok) => {
       const head = `<p class="fb-head">${ok ? "Right." : "Not quite."}</p>`;
       if (it.type === "gap") return head + `<p class="qflow">${it.reveal(ok)}</p>`;
-      if (it.type === "which") return head + `<p>It’s <strong>Q${it.e.id}</strong>: ${esc(it.e.q)}</p>`;
+      if (it.type === "which") return head + `<p>It’s <strong>${qn(it.e)}</strong>: ${esc(it.e.q)}</p>`;
       if (it.type === "next") {
         const marked = it.target.split(/\s+/).map((w) => {
           const core = wordCore(w), tk = toks(core).filter((x) => it.need.includes(x));
@@ -1590,7 +1660,7 @@
           <p class="lede">${firstOK} of ${items.length} right first time, +${firstOK * 10} XP.${st ? ` ${st} ${st === 1 ? "day" : "days"} in a row.` : ""}</p>
           <ul class="daily-sum">${Object.keys(per).map((id) => {
             const p = per[id], e = E[id];
-            return `<li><span class="ds-q"><b>Q${id}</b> ${esc(e.q)}</span><span class="ds-bar" aria-hidden="true"><i style="width:${Math.round((100 * p.ok) / p.n)}%"></i></span><span class="ds-n">${p.ok} of ${p.n}</span></li>`;
+            return `<li><span class="ds-q"><b>${qn(e)}</b> ${esc(e.q)}</span><span class="ds-bar" aria-hidden="true"><i style="width:${Math.round((100 * p.ok) / p.n)}%"></i></span><span class="ds-n">${p.ok} of ${p.n}</span></li>`;
           }).join("")}</ul>
           ${moved.length ? `<p class="callout">${essayList(moved)} ${moved.length === 1 ? "was" : "were"} weak today, so the full recall moves to tomorrow.</p>` : ""}
           <p class="hint">Everything you missed came back once at the end. Tomorrow’s review mixes in new angles on the same essays.${user ? "" : " You’re a guest, so this isn’t saved."}</p>
@@ -1674,7 +1744,7 @@
         <a href="#/play/${e.id}">
           <span class="bc-art">${window.bossSVG(e.id)}${down ? `<span class="bc-stamp">Defeated</span>` : ""}</span>
           <span class="bc-text">
-            <span class="bc-top"><b>Q${e.id}</b>${esc(b.name)}</span>
+            <span class="bc-top"><b>${qn(e)}</b>${esc(b.name)}</span>
             <span class="bc-q">${esc(e.q)}</span>
             <span class="bc-meta"><span class="bc-stars">★ ${n} of 9</span><span>${down ? "Defeated" : LABEL[st]}</span></span>
           </span>
@@ -1700,7 +1770,7 @@
           <div class="hub-text">
             <p class="hub-boss"><b>${esc(window.bossFor(e.id).name)}</b>${esc(window.bossFor(e.id).title)}</p>
             <h1 class="question">${esc(e.q)}</h1>
-            <p class="meta">Essay ${e.id}. ${isDown(e.id) ? "Defeated. Play again any time to keep it sharp." : "Three games, easiest first. Weaken it, then finish it in the boss fight."} ${essayStars(e.id)} of 9 stars.</p>
+            <p class="meta">${en(e)}. ${isDown(e.id) ? "Defeated. Play again any time to keep it sharp." : "Three games, easiest first. Weaken it, then finish it in the boss fight."} ${essayStars(e.id)} of 9 stars.</p>
           </div>
         </section>
         <ol class="levels">${GAMES.map((g, i) => {
@@ -1726,7 +1796,7 @@
     <main class="wrap game-page">
       <div class="game">
         <div class="g-top">
-          <p class="et-cue"><span class="et-qnum">Q${e.id}</span><span class="et-qtext">${esc(e.q)}</span></p>
+          <p class="et-cue"><span class="et-qnum">${qn(e)}</span><span class="et-qtext">${esc(e.q)}</span></p>
           <div class="g-hud">${hud}<button type="button" class="g-sound" data-g="sound" aria-pressed="${soundOn()}">${soundOn() ? "sound on" : "sound off"}</button></div>
         </div>
         <div class="g-arena"></div>
@@ -2080,7 +2150,7 @@
     app.innerHTML = `
       ${topbar()}
       <main class="wrap learn type-page">
-        <p class="meta">EssayType, essay ${e.id}. Every round starts with the question, then the whole essay as one chain.</p>
+        <p class="meta">EssayType, ${en(e).toLowerCase()}. Every round starts with the question, then the whole essay as one chain.</p>
         <h1 class="question">${esc(e.q)}</h1>
         <section class="stage">
           <div id="etHost"></div>
@@ -2091,7 +2161,7 @@
         </section>
       </main>`;
     const host = document.getElementById("etHost");
-    ET = mountEssayType(host, { passages: chainPassages(e), cue: { num: e.id, q: e.q } });
+    ET = mountEssayType(host, { passages: chainPassages(e), cue: { num: qn(e), q: e.q } });
   };
 
   /* ---------- recall and exam ---------- */
@@ -2108,7 +2178,7 @@
       ${topbar()}
       <main class="wrap recall">
         ${guestNotice()}
-        <p class="meta">${exam ? "Mock exam. No notes, no hints." : `Essay ${e.id}. Diagram first, then everything else you remember, in any order.`}</p>
+        <p class="meta">${exam ? "Mock exam. No notes, no hints." : `${en(e)}. Diagram first, then everything else you remember, in any order.`}</p>
         <h1 class="question">${esc(e.q)}</h1>
         ${exam ? timerHTML(C.examMinutes * 60, "Time left", { locked: true, big: true, note: "No pausing, like the real thing. It hands itself in at zero." }) : `
         <div class="bosshud">
@@ -2509,7 +2579,7 @@
     return n;
   };
   const eventText = (ev) => {
-    const q = ev.id ? `Q${ev.id}` : "";
+    const q = ev.id ? (E[ev.id] ? qn(E[ev.id]) : `Q${ev.id}`) : "";
     const b = ev.id && window.bossFor ? window.bossFor(ev.id).name : q;
     return ({
       build: `Built the chain for ${q} (${ev.v} ${ev.v === 1 ? "star" : "stars"})`,
@@ -2693,7 +2763,7 @@
             <ul class="ud-bosses">${C.essays.map((e) => {
               const p = play[e.id] || {}, st = ["build", "gaps", "boss"].reduce((x, g) => x + ((p[g] && p[g].stars) || 0), 0);
               const down = p.boss && p.boss.stars >= 3;
-              return `<li class="${down ? "down" : st ? "some" : ""}" title="${esc(window.bossFor(e.id).name)}"><span>Q${e.id}</span><b>${down ? "defeated" : st ? st + " of 9" : "not started"}</b></li>`;
+              return `<li class="${down ? "down" : st ? "some" : ""}" title="${esc(window.bossFor(e.id).name)}"><span>${qn(e)}</span><b>${down ? "defeated" : st ? st + " of 9" : "not started"}</b></li>`;
             }).join("")}</ul>
           </div>
           <div>
@@ -2917,6 +2987,7 @@
     if (!el) return;
     const act = el.dataset.act;
     if (act === "draw") { closeModal(); showSlip(draw(false), false); }
+    if (act === "pw-random") { const p = PWS[Math.floor(Math.random() * PWS.length)]; if (p) location.hash = `#/play/${p.id}`; }
     else if (act === "exam-draw") showSlip(draw(true), true);
     else if (act === "close") closeModal();
     else if (act === "guest") { switchTo(null); location.hash = "#/"; }
@@ -2994,6 +3065,7 @@
     if (view === "recall" && e) return viewRecall(e, "practice");
     if (view === "exam" && e) return viewRecall(e, "exam");
     if (view === "exam") return viewExamStart();
+    if (view === "pathways") return viewPathways();
     if (view === "how") return viewHow();
     if (view === "users") return viewUsers();
     if (view === "login") return viewLogin();

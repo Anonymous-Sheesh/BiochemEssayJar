@@ -957,3 +957,40 @@ mark.no { background: none; color: var(--red); text-decoration: underline 2px; t
 .b-reveal.ok { border-color: var(--accent); }
 .b-reveal.bad { border-color: var(--red); }
 .b-card span:last-child { word-spacing: 0.05em; }
+
+/* Sections: essays | pathways */
+.sect-tabs { display: flex; gap: 0.4rem; margin: 0 0 1.2rem; padding: 0.3rem; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; width: fit-content; max-width: 100%; }
+.sect-tabs a { padding: 0.5rem 1rem; border-radius: 9px; color: var(--muted); text-decoration: none; font-weight: 600; }
+.sect-tabs a span { font: 500 0.8rem var(--mono); margin-left: 0.35rem; opacity: 0.8; }
+.sect-tabs a.on { background: var(--accent); color: var(--accent-ink); }
+.sect-tabs a:not(.on):hover { color: var(--ink); }
+.pw-hero { margin: 0.5rem 0 1.5rem; }
+.pw-hero h1 { margin: 0 0 0.5rem; }
+.pw-list { display: grid; gap: 0.8rem; margin-top: 1.5rem; }
+.pw-item { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 1rem 1.2rem; }
+.pw-item h2 { font-size: 1.1rem; margin: 0.15rem 0 0.7rem; }
+.pw-item h2 a { color: var(--ink); text-decoration: none; }
+.pw-item h2 a:hover { color: var(--cyan); }
+.pw-num { margin: 0; font: 600 0.8rem var(--mono); color: var(--cyan); }
+.pw-item .actions { margin: 0; }
+
+/* Pathway map */
+.pw-map { display: grid; grid-template-columns: repeat(var(--lanes), minmax(0, 1fr)); gap: 1rem; margin: 0.6rem 0 1rem; }
+.pw-lane { background: var(--paper); border: 1px dashed var(--line); border-radius: 12px; padding: 0.8rem 0.8rem 1rem; min-width: 0; }
+.pw-lane h3 { margin: 0 0 0.7rem; font: 600 0.72rem var(--mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.pw-m { background: var(--raised); border: 1px solid var(--line); border-left: 3px solid var(--cyan); border-radius: 8px; padding: 0.5rem 0.7rem; }
+.pw-m b { display: block; font: 600 0.88rem var(--mono); color: var(--cyan); letter-spacing: 0.01em; overflow-wrap: anywhere; }
+.pw-m small { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 0.15rem; }
+.pw-z { display: flex; gap: 0.6rem; padding: 0.25rem 0 0.25rem 0.9rem; }
+.pw-ar { flex: none; width: 2px; background: var(--line); position: relative; margin: 0.2rem 0 0.6rem; }
+.pw-ar::after { content: ""; position: absolute; left: -5px; bottom: -8px; border: 6px solid transparent; border-top-color: var(--muted); border-bottom: 0; }
+.pw-zt { padding: 0.35rem 0 0.55rem; min-width: 0; }
+.pw-zt i { font: normal 600 0.72rem var(--mono); color: var(--accent-ink); background: var(--accent); border-radius: 50%; display: inline-grid; place-items: center; width: 1.3rem; height: 1.3rem; margin-right: 0.4rem; vertical-align: 1px; }
+.pw-zt b { font-size: 0.9rem; color: var(--accent); }
+.pw-zt small { display: block; color: var(--muted); font-size: 0.8rem; margin-top: 0.15rem; }
+.pw-x { display: inline-block; margin-top: 0.3rem; font-size: 0.78rem; font-weight: 600; color: var(--red); background: rgba(224, 99, 111, 0.12); border-radius: 5px; padding: 0.05rem 0.4rem; }
+.pw-foot { margin: 0 0 0.8rem; padding-left: 1.1rem; color: var(--ink); font-size: 0.92rem; }
+.pw-foot li { margin: 0.3rem 0; }
+@media (max-width: 760px) { .pw-map { grid-template-columns: 1fr; } }
+.pw-m code { display: block; margin-top: 0.2rem; font: 500 0.8rem var(--mono); color: var(--ink); opacity: 0.85; background: none; padding: 0; overflow-wrap: anywhere; }
+.pw-m { text-align: center; }
