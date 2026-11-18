@@ -1863,12 +1863,42 @@
     const T = clean(typed).split(" ").filter(Boolean);
     return keys.filter((k) => k.toks.some((a) => T.some((w) => wordMatch(w, a) || (w.length >= 4 && a.startsWith(w)) || (/\d/.test(a) && w === a))));
   };
+  // Start points inside each chain (index into chainLinks), so you can skip what you already know.
+  const CHECKPOINTS = {
+    1: [[0, "Mouth and stomach"], [11, "Small intestine"], [19, "Absorption"], [21, "Fate of the amino acids"]],
+    2: [[0, "Why the cell destroys its own proteins"], [6, "1. Lysosomes"], [11, "2. Ubiquitin–proteasome system"]],
+    3: [[0, "Transamination and PLP"], [8, "ALT"], [13, "AST"], [18, "Link to deamination"]],
+    4: [[0, "Overview and amino acid oxidases"], [10, "Glutamate dehydrogenase"], [15, "Transdeamination"], [20, "Non-oxidative deamination"]],
+    5: [[0, "Synthesis of serotonin"], [7, "Roles of serotonin"], [10, "Synthesis of melatonin"], [15, "Regulation and roles of melatonin"]],
+    6: [[0, "Synthesis"], [11, "Roles of each"], [15, "Degradation"], [18, "Parkinson’s disease"]],
+    7: [[0, "Sources of NH₃"], [7, "Levels and hyperammonemia"], [10, "Why NH₃ is toxic"]],
+    8: [[0, "Glutamate"], [10, "Glutamine"], [22, "Glucose–alanine cycle"]],
+    9: [[0, "Urea cycle"], [17, "Aspartate–argininosuccinate shunt"], [27, "Regulation and clinical"]],
+    10: [[0, "Normal pathway"], [18, "Phenylketonuria"], [29, "Tyrosine disorders"]],
+    11: [[0, "Pathway"], [18, "Regulation"], [26, "Factors that stimulate heme synthesis"]],
+    12: [[0, "General"], [4, "Symptoms by what piles up"], [12, "Enzyme → porphyria"]],
+    13: [[0, "Absorption"], [9, "Transport and uptake"], [12, "Storage and use"], [16, "Regulation"], [23, "Clinical"]],
+    14: [[0, "Formation"], [12, "Transport to the liver"], [17, "Conjugation"]],
+    15: [[0, "Secretion into bile"], [4, "In the intestine"], [13, "Enterohepatic cycle and urine"]],
+    16: [[0, "Basics"], [4, "Hemolytic"], [11, "Parenchymal"], [16, "Obstructive"], [22, "Neonatal"], [27, "Hereditary forms"]],
+    17: [[0, "Pathway"], [15, "Regulation"]],
+    18: [[0, "Breakdown to uric acid"], [15, "Gout"], [24, "Lesch–Nyhan syndrome"], [27, "Immunodeficiencies and others"]],
+    19: [[0, "Ribonucleotide reductase"], [6, "Regulation"], [18, "Synthesis of dTMP"]],
+    20: [[0, "Pathway"], [18, "Orotic aciduria"], [25, "Other clinical links"]],
+    101: [[0, "Phenylalanine → tyrosine"], [3, "Tyrosine → homogentisate"], [7, "Ring cleavage → fumarate"], [14, "Glucogenic and ketogenic, PKU"]],
+    102: [[0, "Mitochondria"], [5, "Cytosol"], [13, "Nitrogens, cost and the shunt"]],
+    103: [[0, "Building the ring"], [8, "Adding ribose: OMP → UMP"], [15, "UTP and CTP"], [21, "dTMP for DNA"]],
+    104: [[0, "Nucleotides → nucleosides"], [5, "Bases → xanthine"], [10, "Uric acid"]],
+    105: [[0, "Mitochondria: ALA"], [3, "Cytosol: PBG → coproporphyrinogen"], [11, "Back in mitochondria → heme"]]
+  };
+  const startsOf = (e) => (CHECKPOINTS[e.id] || []).filter(([i]) => i < chainLinks(e).length);
+
   const viewBuild = (e) => {
     const links = chainLinks(e);
     const r = rng(`${e.id}:${Date.now()}`);
     const others = C.essays.filter((x) => x.id !== e.id).flatMap((x) => chainLinks(x));
     const qt = qToks(e);
-    const st = { i: 0, combo: 0, best: 0, score: 0, miss: 0, lock: false, missed: [], opts: [], phase: "call", recalled: 0, callable: 0, got: [] };
+    const st = { i: 0, from: 0, combo: 0, best: 0, score: 0, miss: 0, lock: false, missed: [], opts: [], phase: "call", recalled: 0, callable: 0, got: [] };
     app.innerHTML = gameShell(e,
       `<span class="g-stat"><b class="g-score">0</b> pts</span><span class="g-stat g-combo"></span>`,
       `<span class="b-keys-call"><kbd>enter</kbd> check <kbd>tab</kbd> I'm stuck</span><span class="b-keys-pick" hidden><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> pick</span><span>say it before you see it: recalled steps are critical hits</span>`);
@@ -1902,7 +1932,9 @@
       app.querySelector(".g-score").textContent = st.score;
       app.querySelector(".g-combo").textContent = st.combo >= 2 ? `streak ×${Math.min(st.combo, 10)}` : "";
       bar.style.width = `${(100 * st.i) / links.length}%`;
+      if (st.phase === "choose") bar.style.width = "0%";
       const call = st.phase === "call";
+      if (st.phase === "choose") { app.querySelector(".b-keys-call").hidden = true; app.querySelector(".b-keys-pick").hidden = true; return; }
       app.querySelector(".b-keys-call").hidden = !call;
       app.querySelector(".b-keys-pick").hidden = call;
     };
@@ -1926,6 +1958,22 @@
         <div class="b-cards">${st.opts.map((o, k) => `<button type="button" class="b-card" data-pick="${k}"><span class="b-key">${k + 1}</span><span>${esc(o.show)}</span></button>`).join("")}</div>`}`;
       const inp = stage.querySelector(".b-in");
       if (inp) inp.focus({ preventScroll: true });
+    };
+    const choose = () => {
+      st.phase = "choose";
+      const pts = startsOf(e);
+      stage.innerHTML = `
+        <div class="b-from">
+          <p class="b-from-h">Where do you want to start?</p>
+          <p class="b-from-sub">Skip the parts you already know. The steps before your start point stay on screen as a reminder.</p>
+          <div class="b-from-list">${pts.map(([i, label], k) => `<button type="button" class="b-from-btn${k ? "" : " first"}" data-from="${i}"><span class="b-key">${k + 1}</span><span class="b-from-l">${esc(k ? label : "From the start")}${k ? "" : `<small>${esc(label)} · full run, earns stars</small>`}</span><span class="b-from-n">${k ? `step ${i + 1} of ${links.length}` : `${links.length} steps`}</span></button>`).join("")}</div>
+        </div>`;
+      hud();
+      const f = stage.querySelector(".b-from-btn"); if (f) f.focus({ preventScroll: true });
+    };
+    const begin = (from) => {
+      st.i = st.from = Math.max(0, Math.min(from, links.length - 1));
+      startLink();
     };
     const startLink = () => {
       st.lock = false; st.got = []; st.tries = 0;
@@ -1998,32 +2046,41 @@
     const end = () => {
       stopGame();
       bar.style.width = "100%";
-      const n = links.length, rate = st.callable ? st.recalled / st.callable : 1;
+      const n = links.length - st.from, rate = st.callable ? st.recalled / st.callable : 1;
+      const part = st.from > 0;
       const stars = st.miss <= 1 && rate >= 0.6 ? 3 : st.miss <= Math.ceil(n * 0.15) ? 2 : 1;
-      const prev = setStars(e.id, "build", stars, st.score);
+      const prev = part ? { stars: ((S.play || {})[e.id] || {}).build ? S.play[e.id].build.stars || 0 : 0 } : setStars(e.id, "build", stars, st.score);
+      const fromLabel = part ? (startsOf(e).find(([i]) => i === st.from) || [0, ""])[1] : "";
       addXP(st.score / 10);
-      logEvent("build", e.id, stars);
+      logEvent("build", e.id, part ? 0 : stars);
       arena.taunt(stars === 3 ? "Grr... you know my chain. Face me in the boss fight!" : null);
       blip("win");
       stage.innerHTML = resultsHTML({
-        id: e.id, title: rate >= 0.9 && !st.miss ? "Perfect chain" : "Chain built", stars, prevStars: prev.stars,
+        id: e.id, title: part ? `Practised from “${fromLabel}”` : rate >= 0.9 && !st.miss ? "Perfect chain" : "Chain built", stars: part ? prev.stars : stars, prevStars: prev.stars,
         stats: [["recalled", `${st.recalled} of ${st.callable}`], ["score", st.score], ["best streak", "×" + st.best], ["wrong picks", st.miss]],
-        note: stars === 3 ? "You said most of it before seeing it. That's real recall." : "3 stars needs 60% said from memory. The steps below are the ones you couldn't say yet.",
+        note: part ? (stars === 3 ? "That part is solid. Stars only count on a full run from the start, so do one when you’re ready." : "Practice run. The steps below are the ones you couldn’t say yet; stars only count on a full run from the start.")
+          : stars === 3 ? "You said most of it before seeing it. That's real recall." : "3 stars needs 60% said from memory. The steps below are the ones you couldn't say yet.",
         missed: [...new Set(st.missed)].map((m) => esc(m)),
         next: { href: `#/game/gaps/${e.id}`, label: "Next: Gap rush" }
       });
       const n1 = stage.querySelector(".g-btn.main"); if (n1) n1.focus({ preventScroll: true });
     };
     app.onclick = gameClicks(e, (ev) => {
+      const fb = ev.target.closest("[data-from]"); if (fb && st.phase === "choose") return begin(Number(fb.dataset.from));
       if (ev.target.closest("[data-stuck]")) return toPick();
       const c = ev.target.closest("[data-pick]"); if (c) pick(Number(c.dataset.pick));
     });
     app.onsubmit = (ev) => { if (ev.target.closest(".b-call")) { ev.preventDefault(); check(stage.querySelector(".b-in").value); } };
     gameKey = (ev) => {
+      if (st.phase === "choose") {
+        const pts = startsOf(e), k = Number(ev.key) - 1;
+        if (pts[k]) { ev.preventDefault(); begin(pts[k][0]); }
+        return;
+      }
       if (st.phase === "call") { if (ev.key === "Tab") { ev.preventDefault(); toPick(); } return; }
       if (["1", "2", "3"].includes(ev.key)) { ev.preventDefault(); pick(Number(ev.key) - 1); }
     };
-    startLink();
+    if (startsOf(e).length > 1) choose(); else startLink();
   };
 
   // ---- 2. Gap rush ----

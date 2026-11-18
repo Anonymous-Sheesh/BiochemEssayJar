@@ -27,6 +27,11 @@
     18: { arch: "crystal", c1: "#d9f3ff", c2: "#3a8fc4", glow: "#ff4757", label: "UA", name: "Urate Golem", title: "Lord of Gout", taunts: ["My crystals stab your joints!", "Xanthine oxidase sends its regards."] },
     19: { arch: "ghost", c1: "#c3c9d2", c2: "#3b4048", glow: "#6bf0ff", label: "RNR", name: "The Reductase Reaper", title: "Harvester of Ribose", taunts: ["dATP says stop. So do I.", "Thioredoxin? It’s mine now."] },
     20: { arch: "blob", c1: "#ffc078", c2: "#c25a0b", glow: "#5cf2ff", label: "OA", name: "Orotic Ooze", title: "Clogger of UMP", taunts: ["No UMP for you!", "Uridine? You’ll never find it."] },
+    101: { arch: "demon", c1: "#6b6f7a", c2: "#1d1f26", glow: "#ffcf3f", label: "HGA", name: "Alkaptonus", title: "the Black-Urine Lord", taunts: ["Your urine turns black on the shelf!", "Which dioxygenase? You forgot!", "Tyrosinemia I, II or III? Ha!"] },
+    102: { arch: "serpent", c1: "#f7e27c", c2: "#9c7b0c", glow: "#ff4d6d", label: "CPS1", name: "The Urea Leviathan", title: "Coiler of Two Rooms", taunts: ["Mitochondria or cytosol? Choose!", "Who activates CPS I? Not you!", "Where does the second N come from?"] },
+    103: { arch: "crystal", c1: "#9ff0e0", c2: "#127a6a", glow: "#ff8a3d", label: "CAD", name: "The CAD Hydra", title: "Three Heads, One Ring", taunts: ["Ring first or ribose first?", "5-FU can’t touch me!", "DHODH lives where? Wrong!"] },
+    104: { arch: "ghost", c1: "#ffe1a8", c2: "#c47f0f", glow: "#4dd2ff", label: "XO", name: "Xanthos", title: "the Oxidiser", taunts: ["Allopurinol? I laugh at it!", "ADA or PNP? You mixed them up!", "Straight into your big toe!"] },
+    105: { arch: "demon", c1: "#ff5c6c", c2: "#5c0613", glow: "#fff1a8", label: "Heme", crown: true, name: "Vampira Heme", title: "Queen of Eight Steps", taunts: ["Eight enzymes. Name them all!", "Lead in your ferrochelatase!", "AIP, CEP, PCT... confused yet?"] },
     final: { arch: "crystal", c1: "#ffe08a", c2: "#b5651d", glow: "#ff2e63", label: "C5", crown: true, name: "The Colloquium", title: "Final boss", taunts: ["Twenty essays. One slip of paper. Ready?"] }
   };
   var GENERIC = ["Is that all you remember?", "Wrong! Try that link again.", "Ha! The exam will be harder than me."];

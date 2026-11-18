@@ -994,3 +994,14 @@ mark.no { background: none; color: var(--red); text-decoration: underline 2px; t
 @media (max-width: 760px) { .pw-map { grid-template-columns: 1fr; } }
 .pw-m code { display: block; margin-top: 0.2rem; font: 500 0.8rem var(--mono); color: var(--ink); opacity: 0.85; background: none; padding: 0; overflow-wrap: anywhere; }
 .pw-m { text-align: center; }
+
+/* Build the chain: choose a start point */
+.b-from-h { margin: 0.2rem 0 0.25rem; font-weight: 700; font-size: 1.1rem; color: var(--ink); }
+.b-from-sub { margin: 0 0 0.9rem; color: var(--muted); font-size: 0.92rem; }
+.b-from-list { display: grid; gap: 0.5rem; }
+.b-from-btn { display: flex; align-items: center; gap: 0.8rem; width: 100%; text-align: left; background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; padding: 0.75rem 0.9rem; font: inherit; cursor: pointer; transition: border-color 0.15s, transform 0.15s; }
+.b-from-btn:hover, .b-from-btn:focus-visible { border-color: var(--accent); outline: none; transform: translateX(2px); }
+.b-from-btn.first { border-color: rgba(226, 183, 20, 0.45); }
+.b-from-l { flex: 1; font-weight: 600; }
+.b-from-l small { display: block; font-weight: 400; color: var(--muted); font-size: 0.82rem; margin-top: 0.1rem; }
+.b-from-n { color: var(--muted); font: 0.8rem var(--mono); white-space: nowrap; }
