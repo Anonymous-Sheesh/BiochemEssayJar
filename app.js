@@ -292,6 +292,37 @@
     }).catch(() => setSync("offline"));
   };
 
+  // Presence ping: marks you online for the admin page and picks up a one-time kick.
+  let kicked = null;
+  const showKick = () => {
+    if (!kicked) return;
+    stopGame(); gameKey = null; closeModal(); destroyET(); stopTicker();
+    clearInterval(timer); timer = null;
+    app.onclick = null; app.onsubmit = null; app.innerHTML = "";
+    let el = document.getElementById("kicked");
+    if (!el) { el = document.createElement("div"); el.id = "kicked"; document.body.appendChild(el); }
+    el.innerHTML = `
+      <div class="kick-card" role="alertdialog" aria-modal="true" aria-labelledby="kickH">
+        <div class="kick-art">${window.bossSVG ? window.bossSVG("final", "kick-boss") : ""}</div>
+        <p class="kick-by">${esc(kicked.by || OWNER)} kicked you</p>
+        <h2 id="kickH" class="kick-msg">${esc(kicked.msg)}</h2>
+        <button class="btn" data-kick-reload>Refresh to come back</button>
+      </div>`;
+    el.querySelector("[data-kick-reload]").onclick = () => location.reload();
+    el.querySelector("[data-kick-reload]").focus();
+  };
+  const ping = () => {
+    if (!ONLINE || !acct || kicked || document.visibilityState !== "visible") return;
+    const view = location.hash.replace(/^#\/?/, "").split("/").slice(0, 3).join("/") || "home";
+    apiCall("ping", { token: acct.token, view }).then((r) => {
+      if (r && r.ok && r.kick) { kicked = r.kick; syncNow(true); showKick(); }
+      else if (r && !r.ok && /log in/i.test(r.error || "")) sessionEnded();
+    }).catch(() => {});
+  };
+  setInterval(ping, 15000);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") ping(); });
+  document.addEventListener("keydown", (ev) => { if (kicked && ev.key !== "Tab") { ev.stopImmediatePropagation(); if (ev.key !== "Enter") ev.preventDefault(); } }, true);
+
   // Study time: counted while the page is visible and you've touched it in the last 90 seconds.
   const dayLog = () => { const t = today(); S.log = S.log || {}; return (S.log[t] = S.log[t] || { secs: 0, xp: 0, ev: [] }); };
   const trimLog = () => {
@@ -2775,14 +2806,23 @@
         <div id="adminBox"><p class="hint">Loading…</p></div>
       </main>
       ${footer()}`;
-    let data = [], open = null;
+    let data = [], open = null, kickFor = null, kickNote = "";
     const t = today();
+    const isOn = (u) => (u.onlineAt && Date.now() - u.onlineAt < 45000) || Date.now() - new Date(u.lastSeen || 0).getTime() < 60000;
+    const where = (v) => {
+      const [a, b, c] = String(v || "").split("/");
+      const e = E[Number(a === "game" ? c : b)];
+      const names = { home: "home", "": "home", play: "boss hub", study: "recall", learn: "learn", type: "EssayType", review: "daily review", exam: "mock exam", board: "leaderboard", pathways: "pathways", how: "how to study", settings: "settings", account: "account" };
+      const g = { build: "Build the chain", gaps: "Gap rush" };
+      const what = a === "game" ? g[b] || "a game" : names[a] || a;
+      return what + (e ? " · " + qn(e) : "");
+    };
     const draw = () => {
       const box = document.getElementById("adminBox");
       if (!box) return;
       const rows = data.map((u) => Object.assign({ u }, summarize(u.data, t)))
         .sort((a, b) => new Date(b.u.lastSeen || 0) - new Date(a.u.lastSeen || 0));
-      const online = rows.filter((r) => Date.now() - new Date(r.u.lastSeen || 0).getTime() < 180000).length;
+      const online = rows.filter((r) => isOn(r.u)).length;
       const todayN = rows.filter((r) => r.today >= 60).length;
       const totalToday = rows.reduce((s, r) => s + r.today, 0);
       box.innerHTML = `
@@ -2792,14 +2832,25 @@
           <div><b>${todayN}</b><span>studied today</span></div>
           <div><b>${mins(totalToday)}</b><span>studied today, all users</span></div>
         </div>
+        ${kickFor ? `
+        <form class="kickbar" autocomplete="off">
+          <p class="kb-h">Kick <b>${esc(kickFor)}</b> with a message</p>
+          <div class="kb-row">
+            <input name="msg" maxlength="300" placeholder="e.g. Go to sleep, you've done enough 😴" aria-label="Kick message">
+            <button class="btn" type="submit">Kick</button>
+            <button class="btn ghost" type="button" data-kick-cancel>Cancel</button>
+          </div>
+          <p class="hint">One time only: they see your message on their screen within about 15 seconds, and refreshing brings them straight back.</p>
+        </form>` : ""}
+        ${kickNote ? `<p class="kick-note">${esc(kickNote)}</p>` : ""}
         <div class="table-wrap"><table class="users-table">
           <thead><tr><th>Name</th><th>Last seen</th><th>Today</th><th>Last 7 days</th><th>Bosses</th><th>Learned</th><th>Level</th><th>Streak</th><th>Daily review</th></tr></thead>
           <tbody>${rows.map((r, i) => {
-            const on = Date.now() - new Date(r.u.lastSeen || 0).getTime() < 180000;
+            const on = isOn(r.u);
             return `
             <tr class="${open === i ? "open" : ""}" data-row="${i}" tabindex="0">
-              <td><span class="dot${on ? " on" : ""}" title="${on ? "Online now" : ""}"></span>${esc(r.u.name)}${r.u.admin ? ` <span class="tag">owner</span>` : ""}</td>
-              <td>${esc(on ? "online now" : ago(r.u.lastSeen))}</td>
+              <td><span class="dot${on ? " on" : ""}" title="${on ? "Online now" : ""}"></span>${esc(r.u.name)}${r.u.admin ? ` <span class="tag">owner</span>` : ""}${on && !r.u.admin && r.u.name.toLowerCase() !== user.name.toLowerCase() ? ` <button type="button" class="kick-btn" data-kick="${esc(r.u.name)}">Kick</button>` : ""}</td>
+              <td>${on ? `online now${r.u.view ? `<small class="where">${esc(where(r.u.view))}</small>` : ""}` : esc(ago(r.u.lastSeen))}</td>
               <td>${mins(r.today)}</td><td>${mins(r.week)}</td>
               <td>${r.bosses} of ${C.essays.length}</td><td>${r.learned}</td><td>${r.lvl}</td><td>${r.streak}</td>
               <td>${r.daily ? "done" : "not yet"}</td>
@@ -2834,20 +2885,41 @@
           </div>
         </div>`;
     };
+    const load = (quiet) => apiCall("admin", { token: acct.token }).then((r) => {
+      const box = document.getElementById("adminBox");
+      if (!box) return;
+      if (!r || !r.ok) { if (!quiet) box.innerHTML = `<p class="err">${esc((r && r.error) || "Couldn’t load.")}</p>`; return; }
+      data = r.users;
+      if (!(quiet && kickFor)) draw();
+    });
+    // Keep "online now" live while you're on this page.
+    const live = setInterval(() => {
+      if (!document.getElementById("adminBox")) return clearInterval(live);
+      if (document.visibilityState === "visible") load(true).catch(() => {});
+    }, 20000);
+    app.onsubmit = (ev) => {
+      if (!ev.target.closest(".kickbar")) return;
+      ev.preventDefault();
+      const name = kickFor, msg = ev.target.querySelector("input[name=msg]").value.trim();
+      const btn = ev.target.querySelector("button[type=submit]");
+      btn.disabled = true; btn.textContent = "Kicking…";
+      apiCall("kick", { token: acct.token, name, msg }).then((r) => {
+        kickFor = null;
+        kickNote = r && r.ok ? `Kicked ${name}. They’ll see “${msg || "You were kicked by the owner."}” within about 15 seconds.` : (r && r.error) || "Couldn’t kick.";
+        draw();
+      }).catch(() => { kickFor = null; kickNote = "Can’t reach the server right now."; draw(); });
+    };
     app.onclick = (ev) => {
+      const kb = ev.target.closest("[data-kick]");
+      if (kb) { kickFor = kb.dataset.kick; kickNote = ""; draw(); const i = document.querySelector(".kickbar input"); if (i) i.focus(); return; }
+      if (ev.target.closest("[data-kick-cancel]")) { kickFor = null; draw(); return; }
       const tr = ev.target.closest("tr[data-row]");
       if (!tr) return;
       const i = Number(tr.dataset.row);
       open = open === i ? null : i;
       draw();
     };
-    syncNow(false).then(() => apiCall("admin", { token: acct.token })).then((r) => {
-      const box = document.getElementById("adminBox");
-      if (!box) return;
-      if (!r || !r.ok) { box.innerHTML = `<p class="err">${esc((r && r.error) || "Couldn’t load.")}</p>`; return; }
-      data = r.users;
-      draw();
-    }).catch(() => { const box = document.getElementById("adminBox"); if (box) box.innerHTML = `<p class="err">Can’t reach the server right now.</p>`; });
+    syncNow(false).then(() => load(false)).catch(() => { const box = document.getElementById("adminBox"); if (box) box.innerHTML = `<p class="err">Can’t reach the server right now.</p>`; });
   };
 
   /* ---------- users ---------- */
@@ -3105,8 +3177,9 @@
     stopTicker();
     destroyET();
     closeModal();
-    app.onclick = null;
+    app.onclick = null; app.onsubmit = null;
     stopGame();
+    if (kicked) return showKick();
     const [view, arg, arg2] = location.hash.replace(/^#\/?/, "").split("/");
     const e = E[Number(view === "game" ? arg2 : arg)];
     window.scrollTo(0, 0);
@@ -3135,4 +3208,5 @@
   window.addEventListener("hashchange", route);
   route();
   bootSync();
+  setTimeout(ping, 1500);
 })();
