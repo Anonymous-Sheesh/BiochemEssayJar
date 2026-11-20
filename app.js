@@ -1125,7 +1125,7 @@
         <h1 class="question">${esc(e.q)}</h1>
         <div class="actions">
           <a class="btn" href="#/play/${e.id}">Play</a>
-          <a class="btn ghost" href="#/learn/${e.id}">Learn it step by step</a>
+          <a class="btn ghost" href="#/learn/${e.id}">Learn it in one hour</a>
           <a class="btn ghost" href="#/type/${e.id}">Type the chain</a>
           <a class="btn ghost" href="#/recall/${e.id}">Recall it</a>
           <button class="btn ghost" data-act="cover" aria-pressed="false">Cover the answers</button>
@@ -1146,175 +1146,349 @@
       ${footer()}`;
   };
 
-  /* ---------- learn: guided first session for a new essay ----------
-     Warm-up guess → diagram (read, hide, sketch, compare) → each section
-     (read, hide, type back, re-read only misses, repeat) → whole essay recall. */
+  /* ---------- learn: one timed, focused hour per essay ----------
+     The essay is split into its parts (the same start points as Build the chain).
+     Map + guess → for each part: read the causal chain (timed) → explain it from memory in your
+     own words (timed) → see exactly which steps you missed → fix only those (timed).
+     Then explain the whole essay once. Every step has a clock that moves you on by itself;
+     leaving the tab pauses it and counts as a distraction. */
+  const learnKey = (id) => "essayjar:learn:" + id;
+  let learnCleanup = null;
+  const learnParts = (e) => {
+    const n = chainLinks(e).length;
+    let st = startsOf(e);
+    if (st.length < 2) { st = []; for (let i = 0; i < n; i += 7) st.push([i, "Part " + (st.length + 1)]); }
+    return st.map(([from, label], k) => ({ label, from, to: k + 1 < st.length ? st[k + 1][0] : n }));
+  };
+  const range = (a, b) => [...Array(Math.max(0, b - a))].map((_, k) => a + k);
+  // Which chain links does a free explanation cover? true / false, or null for links with no key words ("roles").
+  const coverage = (e, text, idxs) => {
+    const links = chainLinks(e), qt = qToks(e), res = {};
+    idxs.forEach((i) => {
+      const ks = linkKeys(links[i], "", qt);
+      if (!ks.length) { res[i] = null; return; }
+      res[i] = ideaCount(typedHits(text, ks)) >= Math.min(2, ideaCount(ks));
+    });
+    return res;
+  };
+  const learnPlan = (e) => {
+    const links = chainLinks(e), parts = learnParts(e);
+    const words = (i) => links[i].split(/\s+/).length;
+    const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+    const r5 = (x) => Math.round(x / 5) * 5;
+    let p = parts.map((pt) => {
+      const idx = range(pt.from, pt.to);
+      const w = idx.reduce((s, i) => s + words(i), 0);
+      return { ...pt, read: clamp(r5((w / 110) * 60 + 20), 60, 240), explain: clamp(r5(idx.length * 25), 90, 300) };
+    });
+    const prime = 90, whole = clamp(r5(links.length * 20), 300, 720), fixes = p.length * 100;
+    const core = p.reduce((s, x) => s + x.read + x.explain, 0);
+    const room = 3600 - prime - whole - fixes;
+    if (core > room) {
+      const f = Math.max(0.6, room / core);
+      p = p.map((x) => ({ ...x, read: Math.max(45, r5(x.read * f)), explain: Math.max(75, r5(x.explain * f)) }));
+    }
+    const total = prime + whole + fixes + p.reduce((s, x) => s + x.read + x.explain, 0);
+    return { parts: p, prime, whole, total };
+  };
+
   const viewLearn = (e) => {
-    const secs = e.sections;
-    const steps = ["warm", "draw", ...secs.map((_, i) => i), "whole"];
-    const L = { step: 0, phase: "read", targets: null, recalled: {}, result: null };
-    const stepName = (s) => s === "warm" ? "Warm-up guess" : s === "draw" ? "The chain"
-      : s === "whole" ? "The whole essay" : secs[s].h;
+    const links = chainLinks(e), plan = learnPlan(e), parts = plan.parts;
+    const nextEssay = () => {
+      const list = isPW(e) ? PWS : C.essays;
+      return list.find((x) => x.id !== e.id && !isLearned(x.id)) || null;
+    };
+    // L.phase: start, prime, read, explain, result, fix, fixsay, fixresult, whole, done
+    let L = { phase: "start", part: 0, elapsed: 0, away: 0, awayN: 0, got: {}, scores: [], wholeScore: null, missed: [] };
+    let saved = null;
+    try { saved = JSON.parse(store.get(learnKey(e.id)) || "null"); } catch (err) { saved = null; }
+    if (saved && (Date.now() - (saved.savedAt || 0) > 6 * 3600e3 || saved.phase === "done")) { store.del(learnKey(e.id)); saved = null; }
+    let step = null; // { left, total, onEnd }
+    let awaySince = 0, backNote = "";
+
+    const persist = () => {
+      if (L.phase === "start" || L.phase === "done") return;
+      const ph = ["explain", "result"].includes(L.phase) ? "read" : ["fix", "fixsay", "fixresult"].includes(L.phase) ? "next" : L.phase;
+      store.set(learnKey(e.id), JSON.stringify({ ...L, phase: ph, savedAt: Date.now() }));
+    };
+    const focusOn = () => {
+      document.body.classList.add("focus-mode");
+      const d = document.documentElement;
+      try { if (d.requestFullscreen && !document.fullscreenElement) d.requestFullscreen().catch(() => {}); } catch (err) { /* not allowed */ }
+    };
+    const focusOff = () => {
+      document.body.classList.remove("focus-mode");
+      try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {}); } catch (err) { /* ignore */ }
+    };
+    const onVis = () => {
+      if (["start", "done"].includes(L.phase)) return;
+      if (document.visibilityState === "hidden") awaySince = Date.now();
+      else if (awaySince) {
+        const s = Math.round((Date.now() - awaySince) / 1000);
+        awaySince = 0;
+        if (s >= 3) { L.away += s; L.awayN++; backNote = `You left for ${s < 60 ? s + " s" : mins(s)}. The clock waited for you. Back to it.`; paintBar(); persist(); }
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    learnCleanup = () => { document.removeEventListener("visibilitychange", onVis); focusOff(); learnCleanup = null; };
+
+    const runStep = (secs, onEnd) => {
+      step = { left: secs, total: secs, onEnd };
+      clearInterval(timer);
+      timer = setInterval(() => {
+        if (!step || document.visibilityState !== "visible") return;
+        step.left--; L.elapsed++;
+        if (L.elapsed % 15 === 0) persist();
+        paintBar();
+        if (step.left <= 0) { const f = step.onEnd; step = null; clearInterval(timer); timer = null; chime(); if (f) f(); }
+      }, 1000);
+      paintBar();
+    };
+    const stopStep = () => { step = null; clearInterval(timer); timer = null; };
+
+    const stepLabel = () => ({ prime: "Map and guess", read: "Read", explain: "Explain from memory", result: "Check", fix: "Re-read the missed steps", fixsay: "Say them again", fixresult: "Check", whole: "The whole essay" }[L.phase] || "");
+    const paintBar = () => {
+      const bar = app.querySelector(".lf-bar");
+      if (!bar) return;
+      const left = step ? step.left : 0;
+      bar.querySelector(".lf-left").textContent = step ? mmss(left) : "–:––";
+      const fill = bar.querySelector(".lf-fill");
+      fill.style.transition = step && left === step.total ? "none" : "";
+      fill.style.width = step ? `${100 * (1 - left / step.total)}%` : "100%";
+      bar.querySelector(".lf-total").textContent = `${mins(L.elapsed)} of ~${Math.round(plan.total / 60)} min`;
+      bar.classList.toggle("low", !!step && left <= 10);
+      const n = app.querySelector(".lf-back");
+      if (n) { n.textContent = backNote; n.hidden = !backNote; }
+    };
+    const shell = (inner) => {
+      const inPart = ["read", "explain", "result", "fix", "fixsay", "fixresult"].includes(L.phase);
+      const where = inPart ? `Part ${L.part + 1} of ${parts.length}: ${parts[L.part].label}` : L.phase === "whole" ? "Final: the whole essay" : "Before you read";
+      return `
+        <main class="wrap learn lf">
+          <div class="lf-bar">
+            <div class="lf-top">
+              <span class="lf-where"><b>${qn(e)}</b> ${esc(where)} · ${esc(stepLabel())}</span>
+              <span class="lf-total"></span>
+              <button type="button" class="lf-quit" data-l="quit">Stop</button>
+            </div>
+            <div class="lf-row"><span class="lf-left">–:––</span><span class="lf-track"><i class="lf-fill"></i></span></div>
+            <ol class="lf-steps" aria-hidden="true">${["prime", ...parts.map((_, i) => i), "whole"].map((x) => {
+              const done = x === "prime" ? L.phase !== "prime" : x === "whole" ? false : L.phase === "whole" || x < L.part || (x === L.part && ["fixresult"].includes(L.phase));
+              const now = x === "prime" ? L.phase === "prime" : x === "whole" ? L.phase === "whole" : inPart && x === L.part;
+              return `<li class="${done ? "done" : now ? "now" : ""}"></li>`;
+            }).join("")}</ol>
+            <p class="lf-back" hidden></p>
+          </div>
+          <h1 class="question lf-q">${esc(e.q)}</h1>
+          <section class="stage">${inner}</section>
+        </main>`;
+    };
+    const flow = (idx, opts = {}) => `
+      <ol class="flow">${idx.map((i) => {
+        const g = opts.got ? opts.got[i] : undefined;
+        return `<li class="${g === true ? "got" : g === false ? "miss" : g === null ? "neutral" : ""}${opts.ctx && opts.ctx.includes(i) ? " ctx" : ""}"${opts.tap && g !== null ? ` data-li="${i}" tabindex="0" role="button" aria-pressed="${g === true}"` : ""}><span class="fl-n">${i + 1}</span><span class="fl-t">${esc(links[i])}</span>${g === true ? `<span class="fl-m" aria-label="recalled">✓</span>` : g === false ? `<span class="fl-m" aria-label="missed">✗</span>` : ""}</li>`;
+      }).join("")}</ol>`;
+    const box = (ph) => `
+      <label class="sr" for="lfBox">Your explanation</label>
+      <textarea id="lfBox" class="answer-box" spellcheck="false" autocomplete="off" placeholder="${esc(ph)}"></textarea>`;
+    const idxOf = (k) => range(parts[k].from, parts[k].to);
+    const scoreOf = (got) => { const v = Object.values(got).filter((x) => x !== null); return { hit: v.filter(Boolean).length, all: v.length }; };
 
     const render = () => {
-      stopTicker();
-      destroyET();
-      const s = steps[L.step];
-      if (s === "whole" && !S.learned[e.id]) { markLearned(e.id, false); logEvent("learn", e.id); }
-      app.innerHTML = `
-        ${topbar()}
-        <main class="wrap learn">
-          ${guestNotice()}
-          <p class="meta">Learning ${en(e).toLowerCase()}. Step ${L.step + 1} of ${steps.length}: ${esc(stepName(s))}.</p>
-          <ol class="steps" aria-hidden="true">${steps.map((_, i) => `<li class="${i < L.step ? "done" : i === L.step ? "now" : ""}"></li>`).join("")}</ol>
-          <h1 class="question">${esc(e.q)}</h1>
-          <section class="stage">${stage(s)}</section>
-        </main>`;
-      const host = document.getElementById("etHost");
-      if (host) {
-        const passages = s === "draw"
-          ? chainPassages(e)
-          : [{ label: "points", head: secs[s].h, text: (L.targets || secs[s].atoms).map((a) => a.s).join(" "), keys: keyTokens(L.targets || secs[s].atoms) }];
-        ET = mountEssayType(host, { passages, cue: { num: qn(e), q: e.q }, onLastRound: () => nudgeNext(host) });
-        window.scrollTo(0, Math.max(0, host.getBoundingClientRect().top + window.scrollY - 96));
+      const P = parts[L.part];
+      let inner = "";
+      if (L.phase === "start") {
+        app.innerHTML = `
+          ${topbar()}
+          <main class="wrap learn lf-start">
+            ${guestNotice()}
+            <p class="meta">Learn ${en(e).toLowerCase()} in one focused session.</p>
+            <h1 class="question">${esc(e.q)}</h1>
+            <div class="lf-plan">
+              <p class="lf-big">About <b>${Math.round(plan.total / 60)} minutes</b>, every step timed.</p>
+              <ol class="lf-plist">
+                <li><span>Map and guess</span><em>${mmss(plan.prime)}</em></li>
+                ${parts.map((p) => `<li><span>${esc(p.label)}</span><em>read ${mmss(p.read)} · explain ${mmss(p.explain)} · fix</em></li>`).join("")}
+                <li><span>Explain the whole essay</span><em>${mmss(plan.whole)}</em></li>
+              </ol>
+            </div>
+            <div class="lf-how">
+              <p><b>How it works.</b> For each part you read the chain of cause and effect, then hide it and explain it in your own words as if teaching a friend. The app shows exactly which steps you missed, and you fix only those. No copying, no rewriting the same thing again and again.</p>
+              <p><b>Stay in it.</b> Put your phone face down. The page goes full screen and the timers move you on by themselves. If you leave this tab the clock pauses and it counts as a distraction.</p>
+            </div>
+            <div class="actions">
+              ${saved ? `<button class="btn" data-l="resume">Carry on: ${esc(saved.phase === "whole" ? "the whole essay" : saved.phase === "prime" ? "the start" : "part " + (saved.part + 1 + (saved.phase === "next" ? 1 : 0)))}</button><button class="btn ghost" data-l="go">Start again</button>`
+                : `<button class="btn" data-l="go">Start the session</button>`}
+              <a class="btn ghost" href="#/study/${e.id}">Just read the notes</a>
+            </div>
+            ${isLearned(e.id) ? `<p class="hint">You learned this on ${esc(longDate(learnedOn(e.id)))}. Doing it again is fine, or go straight to <a href="#/play/${e.id}">Play</a>.</p>` : ""}
+          </main>
+          ${footer()}`;
+        return;
       }
-      const box = app.querySelector(".stage textarea");
-      if (box) box.focus();
-      if (box) box.addEventListener("keydown", (ev) => {
-        if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
-          ev.preventDefault();
-          const b = app.querySelector("[data-l=check], [data-l=next]");
-          if (b) b.click();
-        }
-      });
+      if (L.phase === "prime") inner = `
+        <h2>The map</h2>
+        <p class="hint">This is the shape of the essay. Before you read anything, type what you think happens in each part. Wrong guesses are fine: guessing first makes the reading stick.</p>
+        <ol class="lf-map">${parts.map((p) => `<li><b>${esc(p.label)}</b><span>${p.to - p.from} steps</span></li>`).join("")}</ol>
+        ${box("Your guesses…")}
+        <div class="actions"><button class="btn" data-l="primeDone">Start reading</button></div>`;
+      if (L.phase === "read") inner = `
+        <h2>${esc(P.label)}</h2>
+        <p class="hint">Read it as a story: each step causes the next. At every arrow ask yourself <b>why</b>. When the clock runs out it hides and you explain it.</p>
+        ${L.part ? `<p class="lf-from">Carries on from: ${esc(links[P.from - 1])}</p>` : ""}
+        ${flow(idxOf(L.part))}
+        <div class="actions"><button class="btn" data-l="readDone">I’ve got it: hide it</button></div>`;
+      if (L.phase === "explain") inner = `
+        <h2>Explain: ${esc(P.label)}</h2>
+        <p class="hint">Teach it to a friend, in order, in your own words: what happens and why. Short phrases and arrows (Tab) are fine. ${idxOf(L.part).length} steps to cover.</p>
+        ${L.part ? `<p class="lf-from">Start from: ${esc(links[P.from - 1])}</p>` : ""}
+        ${box("Start talking…")}
+        <div class="actions"><button class="btn" data-l="check">Check <kbd>ctrl ↵</kbd></button></div>`;
+      if (L.phase === "result" || L.phase === "fixresult") {
+        const idx = L.phase === "result" ? idxOf(L.part) : L.fixIdx;
+        const sc = scoreOf(Object.fromEntries(idx.map((i) => [i, L.got[i]])));
+        const missed = idxOf(L.part).filter((i) => L.got[i] === false);
+        const last = L.part + 1 >= parts.length;
+        inner = `
+          <h2>${esc(P.label)}: ${sc.hit} of ${sc.all} ${L.phase === "fixresult" ? "fixed" : "steps"}</h2>
+          ${flow(L.phase === "result" ? idx : idxOf(L.part), { got: L.got, tap: true })}
+          <p class="hint">Said it in different words and it’s still red? Tap the step to count it.</p>
+          <div class="actions">
+            ${L.phase === "result" && missed.length
+              ? `<button class="btn" data-l="fix">Fix the ${plural(missed.length, "missed step")}</button><button class="btn ghost" data-l="next">Skip</button>`
+              : `<button class="btn" data-l="next">${last ? "Final: the whole essay" : "Next part"}</button>`}
+          </div>
+          <p class="hint">${L.phase === "result" && missed.length ? "Moves on by itself in 20 seconds." : missed.length ? "Still red? It’ll come back in the final round and in Play." : "Clean. Moving on in 20 seconds."}</p>`;
+      }
+      if (L.phase === "fix") inner = `
+        <h2>The steps you missed</h2>
+        <p class="hint">Only these, with the step before each one for context. Ask why each one happens.</p>
+        ${flow(L.fixShow, { ctx: L.fixShow.filter((i) => !L.fixIdx.includes(i)) })}
+        <div class="actions"><button class="btn" data-l="fixReadDone">Hide them</button></div>`;
+      if (L.phase === "fixsay") inner = `
+        <h2>Say them again</h2>
+        <p class="hint">Just the ${plural(L.fixIdx.length, "step")} you missed, in your own words.</p>
+        ${box("…")}
+        <div class="actions"><button class="btn" data-l="fixCheck">Check <kbd>ctrl ↵</kbd></button></div>`;
+      if (L.phase === "whole") inner = `
+        <h2>Now the whole essay</h2>
+        <p class="hint">Exam conditions: from the question alone, explain the whole essay in order, every part. This is what you’ll do on the day.</p>
+        <ol class="lf-map small">${parts.map((p) => `<li><b>${esc(p.label)}</b></li>`).join("")}</ol>
+        ${box("From the start…")}
+        <div class="actions"><button class="btn" data-l="wholeCheck">Check <kbd>ctrl ↵</kbd></button></div>`;
+      if (L.phase === "done") {
+        focusOff();
+        const sc = L.wholeScore || { hit: 0, all: 1 };
+        const pct = Math.round((100 * sc.hit) / Math.max(1, sc.all));
+        const nx = nextEssay();
+        app.innerHTML = `
+          ${topbar()}
+          <main class="wrap learn lf-done">
+            <h1 class="page-title">${en(e)} learned</h1>
+            <div class="kpis">
+              <div><b>${pct}%</b><span>of the essay explained from memory</span></div>
+              <div><b>${mins(L.elapsed)}</b><span>focused time</span></div>
+              <div><b>${L.awayN}</b><span>${L.awayN === 1 ? "time you left" : "times you left"}${L.away ? ` (${mins(L.away)})` : ""}</span></div>
+            </div>
+            <h2>Your final explanation</h2>
+            ${parts.map((p, k) => `<h3 class="lf-ph">${esc(p.label)}</h3>${flow(idxOf(k), { got: L.finalGot })}`).join("")}
+            <p class="callout ok">It’s in your daily review from tomorrow. The red steps are your weak spots.</p>
+            <div class="actions">
+              <a class="btn" href="#/play/${e.id}">Bonus: Play it (Build the chain, Gap rush)</a>
+              ${nx ? `<a class="btn ghost" href="#/learn/${nx.id}">Next: learn ${esc(en(nx).toLowerCase())}</a>` : ""}
+              <a class="btn ghost" href="#/">Home</a>
+            </div>
+          </main>
+          ${footer()}`;
+        return;
+      }
+      app.innerHTML = shell(inner);
+      paintBar();
+      const t = app.querySelector("#lfBox");
+      if (t) {
+        t.focus({ preventScroll: true });
+        t.addEventListener("keydown", (ev) => {
+          if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") { ev.preventDefault(); const b = app.querySelector("[data-l=check],[data-l=fixCheck],[data-l=wholeCheck],[data-l=primeDone]"); if (b) b.click(); }
+        });
+      } else { const b = app.querySelector(".stage .btn"); if (b) b.focus({ preventScroll: true }); }
+      window.scrollTo(0, 0);
     };
 
-    const stage = (s) => {
-      if (s === "warm") return `
-        <h2>Warm-up guess</h2>
-        <p>Before you read anything, type whatever you already know or can guess about this question. Wrong guesses are fine: trying first makes the reading stick better.</p>
-        <label class="sr" for="warm">Your guess</label>
-        <textarea id="warm" class="answer-box short" spellcheck="false" autocomplete="off" placeholder="Anything that comes to mind…"></textarea>
-        <div class="actions"><button class="btn" data-l="next">Continue</button><button class="btn ghost" data-l="next">Skip</button></div>`;
-
-      if (s === "draw") {
-        if (L.phase === "hidden") return `
-          <h2>Sketch it from memory</h2>
-          <p>Take a sheet of paper and draw the diagram without looking: metabolites, arrows, enzymes, cofactors. Then compare.</p>
-          <div class="actions"><button class="btn" data-l="compare">Compare with the original</button></div>`;
-        if (L.phase === "type") return `
-          <h2>Type the chain</h2>
-          <p class="hint">The question, then the whole essay as one chain. Read each link as you type it: it says what happens and why. Copy first, then gaps, then first letters. The story is there too.</p>
-          <div id="etHost"></div>
-          <div class="actions">
-            <button class="btn" data-l="hide" data-nudge>I’m ready: hide it and sketch</button>
-            <button class="btn ghost" data-l="read">Back to reading</button>
-          </div>`;
-        return `
-          ${L.phase === "compare" ? `<p class="callout">Correct your sketch where it differs. If it was far off, read it once more and sketch again.</p>` : `<p>Read the diagram, the chain and the story for three minutes. Follow the chain link by link and ask why each step leads to the next. Then type the chain in EssayType, then hide everything and sketch the diagram on paper.</p>${timerHTML(180, "Reading time")}`}
-          ${drawBlock(e)}
-          ${L.phase === "compare" ? "" : chainBlock(e)}
-          ${storyBlock(e)}
-          <div class="actions">
-            ${L.phase === "compare"
-              ? `<button class="btn ghost" data-l="hide">Sketch it again</button><button class="btn" data-l="next">Next: the sections</button>`
-              : `<button class="btn" data-l="type" data-nudge>Type it in EssayType</button><button class="btn ghost" data-l="hide">Skip to sketching</button>`}
-          </div>`;
-      }
-
-      if (s === "whole") return `
-        <h2>The whole essay</h2>
-        <p>Every section has come back at least once. Now close everything and write the full essay from the question alone, diagram first. This first full recall starts the essay’s review schedule.</p>
-        <p class="callout ok">${en(e)} is now marked as learned. It joins your daily review from tomorrow.</p>
-        <p class="hint">Take a 5 to 10 minute break first: stand up, get some water, don’t look at the notes. A short gap makes this recall work harder, and that effort is what makes it stick.</p>
-        ${timerHTML(300, "Break", { choices: [5, 10] })}
-        <div class="actions"><a class="btn" href="#/recall/${e.id}" data-nudge>Recall the whole essay</a></div>`;
-
-      // a section
-      const sec = secs[s];
-      const shown = L.targets || sec.atoms;
-      const passTotal = sec.atoms.filter((a) => a.tier === "pass").length;
-      const readSecs = Math.min(150, Math.max(30, Math.round(shown.length * 25 / 5) * 5));
-      if (L.phase === "read") return `
-        <h2>${esc(sec.h)}</h2>
-        <p class="hint">${L.targets
-          ? `Read the ${plural(L.targets.length, "point")} you missed, about ${mmss(readSecs)}. Then type them in EssayType, then hide them and type them back.`
-          : `Read these ${plural(sec.atoms.length, "point")}, about ${mmss(readSecs)}. Notice how they connect. Then type them in EssayType, then hide them and type them back from memory.`}</p>
-        ${timerHTML(readSecs, "Reading time", { compact: true })}
-        ${atomList(shown, { noSrc: true })}
-        <div class="actions"><button class="btn" data-l="type" data-nudge>Type it in EssayType</button><button class="btn ghost" data-l="hide">Skip to hide and type back</button></div>`;
-      if (L.phase === "type") return `
-        <h2>${esc(sec.h)}</h2>
-        <p class="hint">Each round runs question, then section, then points, so the points are always chained to their question. Copy first, then gaps, then first letters.</p>
-        <div id="etHost"></div>
-        <div class="actions">
-          <button class="btn" data-l="hide" data-nudge>I’m ready: hide and type them back</button>
-          <button class="btn ghost" data-l="read">Back to reading</button>
-        </div>`;
-      if (L.phase === "hidden") return `
-        <h2>${esc(sec.h)}</h2>
-        <p class="hint">${L.targets
-          ? `Type the ${plural(L.targets.length, "point")} you missed. Your own words, any order.`
-          : `Type everything from this section: ${plural(passTotal, "pass point")}${sec.atoms.length > passTotal ? ` and ${plural(sec.atoms.length - passTotal, "boost point")}` : ""}. Your own words, any order.`}</p>
-        <p class="cue-line"><span>${qn(e)}</span> ${esc(e.q)} <b>→ ${esc(sec.h)}</b></p>
-        <label class="sr" for="secBox">Your recall</label>
-        <textarea id="secBox" class="answer-box short" spellcheck="false" autocomplete="off"></textarea>
-        <div class="actions"><button class="btn" data-l="check">Check</button></div>`;
-      // phase "checked"
-      const missed = sec.atoms.filter((a) => a.tier === "pass" && !L.recalled[a.id]);
-      const R = L.result;
-      return `
-        <h2>${esc(sec.h)}</h2>
-        <p class="score"><strong>${passTotal - missed.length} of ${passTotal}</strong> pass points recalled in this section.</p>
-        ${R.text.trim() ? `<div class="block your-answer"><div class="answer-view">${highlight(R.text, R.T, R.hitSet)}</div></div>` : ""}
-        <p class="hint">Tap a line if the check missed something you did write.</p>
-        <ul class="atoms learn-check">
-          ${sec.atoms.map((a) => {
-            const got = !!L.recalled[a.id];
-            const mark = got ? "✓" : a.tier === "pass" ? "⊗" : "○";
-            return `<li><button class="check-row ${got ? "got" : "missed"} tier-${a.tier}" data-la="${a.id}" aria-pressed="${got}">
-              <span class="mark" aria-hidden="true">${mark}</span>
-              <span class="atom-body"><span class="atom-text"><span class="hl">${esc(a.s)}</span></span>
-              <span class="src">${a.tier === "pass" ? "Pass" : "Boost"}</span></span></button></li>`;
-          }).join("")}
-        </ul>
-        <div class="actions">
-          ${missed.length
-            ? `<button class="btn" data-l="reread">Re-read the ${plural(missed.length, "missed point")}</button><button class="btn ghost" data-l="next">Move on anyway</button>`
-            : `<p class="callout ok">Section done.</p><button class="btn" data-l="next">${L.step + 1 < steps.length - 1 ? "Next section" : "Next: the whole essay"}</button>`}
-        </div>`;
+    const go = (phase) => { L.phase = phase; backNote = ""; render(); persist(); };
+    const toRead = () => { go("read"); runStep(parts[L.part].read, () => toExplain()); };
+    const toExplain = () => { go("explain"); runStep(parts[L.part].explain, () => check()); };
+    const text = () => { const t = app.querySelector("#lfBox"); return t ? t.value : ""; };
+    const autoNext = () => runStep(20, () => next());
+    const check = () => {
+      stopStep();
+      Object.assign(L.got, coverage(e, text(), idxOf(L.part)));
+      L.scores[L.part] = scoreOf(Object.fromEntries(idxOf(L.part).map((i) => [i, L.got[i]])));
+      go("result"); autoNext();
+    };
+    const toFix = () => {
+      L.fixIdx = idxOf(L.part).filter((i) => L.got[i] === false);
+      L.fixShow = [...new Set(L.fixIdx.flatMap((i) => (i > parts[L.part].from ? [i - 1, i] : [i])))].sort((a, b) => a - b);
+      go("fix");
+      runStep(Math.min(90, Math.max(30, L.fixIdx.length * 12)), () => toFixSay());
+    };
+    const toFixSay = () => { go("fixsay"); runStep(Math.min(120, Math.max(45, L.fixIdx.length * 20)), () => fixCheck()); };
+    const fixCheck = () => {
+      stopStep();
+      const c = coverage(e, text(), L.fixIdx);
+      L.fixIdx.forEach((i) => { if (c[i]) L.got[i] = true; });
+      go("fixresult"); autoNext();
+    };
+    const next = () => {
+      stopStep();
+      if (L.part + 1 >= parts.length) { go("whole"); runStep(plan.whole, () => wholeCheck()); return; }
+      L.part++; toRead();
+    };
+    const wholeCheck = () => {
+      stopStep();
+      L.finalGot = coverage(e, text(), range(0, links.length));
+      L.wholeScore = scoreOf(L.finalGot);
+      L.missed = range(0, links.length).filter((i) => L.finalGot[i] === false);
+      if (!S.learned[e.id]) markLearned(e.id, false);
+      logEvent("learn", e.id, Math.round((100 * L.wholeScore.hit) / Math.max(1, L.wholeScore.all)));
+      addXP(Math.round(20 + 60 * (L.wholeScore.hit / Math.max(1, L.wholeScore.all))));
+      store.del(learnKey(e.id));
+      go("done");
     };
 
     app.onclick = (ev) => {
-      const b = ev.target.closest("[data-l], [data-la]");
+      const li = ev.target.closest("[data-li]");
+      if (li && ["result", "fixresult"].includes(L.phase)) {
+        const i = Number(li.dataset.li);
+        L.got[i] = !L.got[i];
+        L.scores[L.part] = scoreOf(Object.fromEntries(idxOf(L.part).map((k) => [k, L.got[k]])));
+        const left = step ? step.left : 0, f = step && step.onEnd;
+        render(); persist();
+        if (f) runStep(Math.max(left, 10), f);
+        return;
+      }
+      const b = ev.target.closest("[data-l]");
       if (!b || !app.querySelector(".learn")) return;
-      if (b.dataset.la) {
-        L.recalled[b.dataset.la] = !L.recalled[b.dataset.la];
-        return render();
+      const a = b.dataset.l;
+      if (a === "go") { store.del(learnKey(e.id)); L = { phase: "prime", part: 0, elapsed: 0, away: 0, awayN: 0, got: {}, scores: [], wholeScore: null, missed: [] }; focusOn(); wakeAudio(); render(); persist(); runStep(plan.prime, () => primeDone()); }
+      else if (a === "resume") {
+        const sv = saved; L = { ...L, ...sv }; focusOn(); wakeAudio();
+        if (sv.phase === "prime") { go("prime"); runStep(plan.prime, () => primeDone()); }
+        else if (sv.phase === "whole") { go("whole"); runStep(plan.whole, () => wholeCheck()); }
+        else if (sv.phase === "next") next();
+        else toRead();
       }
-      const act = b.dataset.l;
-      const s = steps[L.step];
-      if (act === "next") { L.step = Math.min(L.step + 1, steps.length - 1); L.phase = "read"; L.targets = null; L.result = null; window.scrollTo(0, 0); }
-      else if (act === "hide") L.phase = "hidden";
-      else if (act === "type") L.phase = "type";
-      else if (act === "read") L.phase = "read";
-      else if (act === "compare") L.phase = "compare";
-      else if (act === "reread") {
-        L.targets = secs[s].atoms.filter((a) => a.tier === "pass" && !L.recalled[a.id]);
-        L.phase = "read";
-      }
-      else if (act === "check") {
-        const text = document.getElementById("secBox").value;
-        const T = tokenize(text), hitSet = new Set();
-        (L.targets || secs[s].atoms).forEach((a) => {
-          const hits = checkAtom(T, a);
-          if (hits) { L.recalled[a.id] = true; hits.forEach((h) => hitSet.add(h)); }
-        });
-        L.result = { text, T, hitSet };
-        L.phase = "checked";
-      }
-      render();
+      else if (a === "primeDone") primeDone();
+      else if (a === "readDone") { stopStep(); toExplain(); }
+      else if (a === "check") check();
+      else if (a === "fix") { stopStep(); toFix(); }
+      else if (a === "fixReadDone") { stopStep(); toFixSay(); }
+      else if (a === "fixCheck") fixCheck();
+      else if (a === "next") next();
+      else if (a === "wholeCheck") wholeCheck();
+      else if (a === "quit") { if (confirm("Stop the session? You can carry on from this part later today.")) { persist(); stopStep(); focusOff(); location.hash = `#/study/${e.id}`; } }
     };
+    const primeDone = () => { stopStep(); toRead(); };
+    app.onkeydown = null;
     render();
   };
 
@@ -1804,6 +1978,12 @@
             <p class="meta">${en(e)}. ${isDown(e.id) ? "Defeated. Play again any time to keep it sharp." : "Three games, easiest first. Weaken it, then finish it in the boss fight."} ${essayStars(e.id)} of 9 stars.</p>
           </div>
         </section>
+        ${isLearned(e.id) ? "" : `
+        <a class="learn-first" href="#/learn/${e.id}">
+          <span class="lf1-n" aria-hidden="true">1</span>
+          <span class="lf1-body"><b>Learn it first, about ${Math.round(learnPlan(e).total / 60)} minutes</b><span>Read each part, explain it from memory, fix what you missed. Every step is timed. Then the games below make it stick.</span></span>
+          <span class="btn">Start</span>
+        </a>`}
         <ol class="levels">${GAMES.map((g, i) => {
           const r = rec[g.id], up = nextUp && nextUp.id === g.id;
           return `
@@ -1817,7 +1997,7 @@
             <a class="btn${up ? "" : " ghost"}" href="${g.id === "boss" ? `#/boss/${e.id}` : `#/game/${g.id}/${e.id}`}">${r && r.stars ? "Play again" : "Play"}</a>
           </li>`;
         }).join("")}</ol>
-        <p class="hint">Prefer reading first? <a href="#/learn/${e.id}">Learn it step by step</a> or <a href="#/study/${e.id}">open the notes</a>.</p>
+        <p class="hint">${isLearned(e.id) ? `Want to go through it properly again? <a href="#/learn/${e.id}">Learn it in one hour</a> or <a href="#/study/${e.id}">open the notes</a>.` : `Or just <a href="#/study/${e.id}">open the notes</a>.`}</p>
       </main>
       ${footer()}`;
   };
@@ -1886,7 +2066,7 @@
       if (!c.some((t) => (t.length >= 4 || /\d/.test(t)) && !CALL_STOP.has(t))) return;
       const k = c.join(" ");
       if (seen.has(k)) return;
-      seen.add(k); out.push({ raw: w, pos, brk: /[,;:]$/.test(raw), toks: c.filter((t) => (t.length >= 4 || /\d/.test(t)) && !CALL_STOP.has(t)) });
+      seen.add(k); out.push({ raw: w, pos, brk: /[,;:)\]]$/.test(raw), open: /^[(\[]/.test(raw), toks: c.filter((t) => (t.length >= 4 || /\d/.test(t)) && !CALL_STOP.has(t)) });
     });
     return out;
   };
@@ -1895,6 +2075,16 @@
     return keys.filter((k) => k.toks.some((a) => T.some((w) => wordMatch(w, a) || (w.length >= 4 && a.startsWith(w)) || (/\d/.test(a) && w === a))));
   };
   // Start points inside each chain (index into chainLinks), so you can skip what you already know.
+  // Key words of one chain link, minus words given away by the question (and the link above, if given).
+  // Words next to each other ("released amino acids") count as one idea.
+  const linkKeys = (link, prevLink, qt) => {
+    const prev = new Set(toks(prevLink || ""));
+    const ks = keyWordsOf(link).map((k) => ({ ...k, toks: k.toks.filter((t) => !prev.has(t) && !qt.has(t)) })).filter((k) => k.toks.length);
+    let g = -1, last = -9, brk = false;
+    ks.forEach((k) => { if (k.pos !== last + 1 || brk || k.open) g++; k.idea = g; last = k.pos; brk = k.brk; });
+    return ks;
+  };
+  const ideaCount = (ks) => new Set(ks.map((k) => k.idea)).size;
   const CHECKPOINTS = {
     1: [[0, "Mouth and stomach"], [11, "Small intestine"], [19, "Absorption"], [21, "Fate of the amino acids"]],
     2: [[0, "Why the cell destroys its own proteins"], [6, "1. Lysosomes"], [11, "2. Ubiquitin–proteasome system"]],
@@ -1936,16 +2126,7 @@
     const stage = app.querySelector(".g-stage"), bar = app.querySelector(".g-bar i");
     const arena = window.mountArena(app.querySelector(".g-arena"), e.id, {});
     // Key words you must produce: skip words given away by the question or the link just above.
-    const callKeys = (i) => {
-      const prev = new Set(toks(links[i - 1] || ""));
-      const ks = keyWordsOf(links[i]).map((k) => ({ ...k, toks: k.toks.filter((t) => !prev.has(t) && !qt.has(t)) })).filter((k) => k.toks.length);
-      // words next to each other ("released amino acids") count as one idea
-      let g = -1, last = -9;
-      let brk = false;
-      ks.forEach((k) => { if (k.pos !== last + 1 || brk) g++; k.idea = g; last = k.pos; brk = k.brk; });
-      return ks;
-    };
-    const ideaCount = (ks) => new Set(ks.map((k) => k.idea)).size;
+    const callKeys = (i) => linkKeys(links[i], links[i - 1], qt);
     const jumble = (link) => {
       const kw = keyWordsOf(link).map((k) => k.raw);
       return (kw.length ? shuffle(kw, r) : [link]).join("  ·  ");
@@ -2567,14 +2748,15 @@
         </section>
 
         <section class="block">
-          <h2>Prefer reading first? Learn</h2>
+          <h2>Learn: one focused hour per essay</h2>
           <ol>
-            <li><strong>Warm-up guess.</strong> Type what you know before reading. Trying first makes the reading stick.</li>
-            <li><strong>The diagram.</strong> Read it with the story, type the story in EssayType, then hide it, sketch it on paper, compare, fix.</li>
-            <li><strong>Section by section.</strong> Read a few points, run them through EssayType, then hide them and type them back. Re-read only what you missed and go again, until every pass point has come back once.</li>
-            <li><strong>The whole essay.</strong> After a short break, from the question alone. This starts its review schedule.</li>
+            <li><strong>The map and a guess (90 s).</strong> See the parts of the essay and guess what each one says. Guessing first makes the reading stick.</li>
+            <li><strong>Each part: read, then explain.</strong> Read the chain of cause and effect on a timer, asking why at every arrow. Then it hides and you explain it in your own words, like teaching a friend. Explaining is what makes it make sense, and it’s exactly what you do in the exam.</li>
+            <li><strong>Fix only what you missed.</strong> The app shows which steps you left out. You re-read just those, with the step before each one, and say them again.</li>
+            <li><strong>The whole essay.</strong> From the question alone, every part in order. That puts it in your daily review.</li>
           </ol>
-          <p class="hint">About 25 to 40 minutes per essay. Two new essays a day for the first ten days.</p>
+          <p>Every step has a clock that moves you on by itself, the page goes full screen, and leaving the tab pauses the clock and counts as a distraction. No rewriting the same thing over and over: the repetition comes after, in Play.</p>
+          <p class="hint">Under an hour per essay. Then Play is the bonus: Build the chain and Gap rush drill the order and the details.</p>
         </section>
 
         <section class="block">
@@ -3174,6 +3356,7 @@
   /* ---------- router ---------- */
   const route = () => {
     clearInterval(timer); timer = null;
+    if (learnCleanup) learnCleanup();
     stopTicker();
     destroyET();
     closeModal();
