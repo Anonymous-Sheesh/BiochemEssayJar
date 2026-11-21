@@ -1191,12 +1191,12 @@
     const spk = spicyFor(e);
     let p = parts.map((pt, k) => {
       const idx = range(pt.from, pt.to);
-      const w = idx.reduce((s, i) => s + words(i), 0) + (spk && spk[k] ? spk[k].split(/\s+/).length * 0.5 : 0);
+      const w = idx.reduce((s, i) => s + words(i), 0) + (spk && spk[k] ? spk[k].split(/\s+/).length * 0.25 : 0);
       return { ...pt, read: clamp(r5((w / 110) * 60 + 20), 60, 240) + 60, explain: clamp(r5(idx.length * 25), 90, 300) };
     });
     const sp = spicyFor(e);
     const storyWords = sp ? sp.join(" ").split(/\s+/).length : (e.hook || "").split(/\s+/).length;
-    const prime = clamp(r5((storyWords / 160) * 60 + 30), 90, 360), whole = clamp(r5(links.length * 20), 300, 720), fixes = p.length * 100;
+    const prime = clamp(r5((storyWords / (sp ? 120 : 160)) * 60 + 60), 90, 660), whole = clamp(r5(links.length * 20), 300, 720), fixes = p.length * 100;
     const core = p.reduce((s, x) => s + x.read + x.explain, 0);
     const room = 3600 - prime - whole - fixes;
     if (core > room) {
