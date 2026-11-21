@@ -1001,7 +1001,18 @@
     ...(e.chain ? [{ label: "chain", text: e.chain, keys: keyTokens(e.atoms) }] : []),
     ...(e.hook ? [{ label: "story", text: e.hook, keys: keyTokens(e.atoms) }] : [])
   ];
-  const storyBlock = (e) => e.hook ? `<section class="block story"><h2>The story</h2><p>${esc(e.hook)}</p></section>` : "";
+  // Spicy stories (18+): opt-in per user. **x** marks key terms.
+  const spicyOn = () => !!S.spicy;
+  const spicyFor = (e) => (spicyOn() && window.SPICY && window.SPICY[e.id]) || null;
+  const spicyHTML = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+  const spicyParts = (e) => {
+    const sp = spicyFor(e); if (!sp) return "";
+    const labels = startsOf(e).map(([, l]) => l);
+    return sp.map((t, k) => `${labels[k] ? `<h3 class="sp-h">${esc(labels[k])}</h3>` : ""}<p>${spicyHTML(t)}</p>`).join("");
+  };
+  const storyBlock = (e) => spicyFor(e)
+    ? `<section class="block story spicy"><h2>The story <span class="tag">18+</span></h2>${spicyParts(e)}<p class="hint">Every joke is a real step, in order. Retell it and you’ve got the chain.</p></section>`
+    : e.hook ? `<section class="block story"><h2>The story</h2><p>${esc(e.hook)}</p></section>` : "";
 
   /* ---------- sections: essays | pathways ---------- */
   const sectionTabs = (on) => `
@@ -1176,17 +1187,20 @@
     const words = (i) => links[i].split(/\s+/).length;
     const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
     const r5 = (x) => Math.round(x / 5) * 5;
-    let p = parts.map((pt) => {
+    const spk = spicyFor(e);
+    let p = parts.map((pt, k) => {
       const idx = range(pt.from, pt.to);
-      const w = idx.reduce((s, i) => s + words(i), 0);
-      return { ...pt, read: clamp(r5((w / 110) * 60 + 20), 60, 240), explain: clamp(r5(idx.length * 25), 90, 300) };
+      const w = idx.reduce((s, i) => s + words(i), 0) + (spk && spk[k] ? spk[k].split(/\s+/).length * 0.5 : 0);
+      return { ...pt, read: clamp(r5((w / 110) * 60 + 20), 60, 240) + 60, explain: clamp(r5(idx.length * 25), 90, 300) };
     });
-    const prime = 90, whole = clamp(r5(links.length * 20), 300, 720), fixes = p.length * 100;
+    const sp = spicyFor(e);
+    const storyWords = sp ? sp.join(" ").split(/\s+/).length : (e.hook || "").split(/\s+/).length;
+    const prime = clamp(r5((storyWords / 160) * 60 + 30), 90, 360), whole = clamp(r5(links.length * 20), 300, 720), fixes = p.length * 100;
     const core = p.reduce((s, x) => s + x.read + x.explain, 0);
     const room = 3600 - prime - whole - fixes;
     if (core > room) {
       const f = Math.max(0.6, room / core);
-      p = p.map((x) => ({ ...x, read: Math.max(45, r5(x.read * f)), explain: Math.max(75, r5(x.explain * f)) }));
+      p = p.map((x) => ({ ...x, read: Math.max(105, r5(x.read * f)), explain: Math.max(75, r5(x.explain * f)) }));
     }
     const total = prime + whole + fixes + p.reduce((s, x) => s + x.read + x.explain, 0);
     return { parts: p, prime, whole, total };
@@ -1246,7 +1260,7 @@
     };
     const stopStep = () => { step = null; clearInterval(timer); timer = null; };
 
-    const stepLabel = () => ({ prime: "Map and guess", read: "Read", explain: "Explain from memory", result: "Check", fix: "Re-read the missed steps", fixsay: "Say them again", fixresult: "Check", whole: "The whole essay" }[L.phase] || "");
+    const stepLabel = () => ({ prime: "The story", read: "Read", explain: "Explain from memory", result: "Check", fix: "Re-read the missed steps", fixsay: "Say them again", fixresult: "Check", whole: "The whole essay" }[L.phase] || "");
     const paintBar = () => {
       const bar = app.querySelector(".lf-bar");
       if (!bar) return;
@@ -1307,7 +1321,7 @@
             <div class="lf-plan">
               <p class="lf-big">About <b>${Math.round(plan.total / 60)} minutes</b>, every step timed.</p>
               <ol class="lf-plist">
-                <li><span>Map and guess</span><em>${mmss(plan.prime)}</em></li>
+                <li><span>The story${spicyFor(e) ? " (spicy)" : ""}</span><em>${mmss(plan.prime)}</em></li>
                 ${parts.map((p) => `<li><span>${esc(p.label)}</span><em>read ${mmss(p.read)} · explain ${mmss(p.explain)} · fix</em></li>`).join("")}
                 <li><span>Explain the whole essay</span><em>${mmss(plan.whole)}</em></li>
               </ol>
@@ -1327,15 +1341,16 @@
         return;
       }
       if (L.phase === "prime") inner = `
-        <h2>The map</h2>
-        <p class="hint">This is the shape of the essay. Before you read anything, type what you think happens in each part. Wrong guesses are fine: guessing first makes the reading stick.</p>
-        <ol class="lf-map">${parts.map((p) => `<li><b>${esc(p.label)}</b><span>${p.to - p.from} steps</span></li>`).join("")}</ol>
-        ${box("Your guesses…")}
-        <div class="actions"><button class="btn" data-l="primeDone">Start reading</button></div>`;
+        <h2>The story first</h2>
+        <p class="hint">Read it like a story, not a list. Each part below is one part of the essay, and every scene is a real step in the right order. Then you’ll learn the parts one at a time.</p>
+        ${spicyFor(e) ? `<div class="lf-story spicy">${spicyParts(e)}</div>`
+          : `${e.hook ? `<div class="lf-story"><p>${esc(e.hook)}</p></div>` : ""}<ol class="lf-map">${parts.map((p) => `<li><b>${esc(p.label)}</b><span>${p.to - p.from} steps</span></li>`).join("")}</ol>`}
+        <div class="actions"><button class="btn" data-l="primeDone">Got the story: start part 1</button></div>`;
       if (L.phase === "read") inner = `
         <h2>${esc(P.label)}</h2>
         <p class="hint">Read it as a story: each step causes the next. At every arrow ask yourself <b>why</b>. When the clock runs out it hides and you explain it.</p>
         ${L.part ? `<p class="lf-from">Carries on from: ${esc(links[P.from - 1])}</p>` : ""}
+        ${spicyFor(e) && spicyFor(e)[L.part] ? `<div class="lf-story spicy small"><p>${spicyHTML(spicyFor(e)[L.part])}</p></div><p class="lf-now">Now the real steps. Match each one to its scene:</p>` : ""}
         ${flow(idxOf(L.part))}
         <div class="actions"><button class="btn" data-l="readDone">I’ve got it: hide it</button></div>`;
       if (L.phase === "explain") inner = `
@@ -3180,6 +3195,11 @@
           <p class="saved" id="saved" hidden>Dates saved.</p>
         </form>
         <section class="block">
+          <h2>Spicy stories <span class="tag">18+</span></h2>
+          <p>Dirty, funny versions of every essay’s story: sex jokes that each carry a real step, in the right order. They show in Learn (read first) and on the notes page. Only for you, and off for everyone else unless they switch it on.</p>
+          <label class="switch"><input type="checkbox" id="spicyToggle" ${S.spicy ? "checked" : ""}> <span>Show spicy stories</span></label>
+        </section>
+        <section class="block">
           <h2>Back up or move your progress</h2>
           ${user ? `
           <p>Export to keep a backup or to move this user to another device; import there after creating the user.</p>
@@ -3198,6 +3218,7 @@
       </main>
       ${footer()}`;
 
+    document.getElementById("spicyToggle").addEventListener("change", (ev) => { S.spicy = ev.target.checked; save(); });
     document.getElementById("dates").addEventListener("submit", (ev) => {
       ev.preventDefault();
       const f = new FormData(ev.target);
