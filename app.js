@@ -1004,6 +1004,7 @@
   // Spicy stories (18+): opt-in per user. **x** marks key terms.
   const spicyOn = () => !!S.spicy;
   const spicyFor = (e) => (spicyOn() && window.SPICY && window.SPICY[e.id]) || null;
+  const spicyTitle = (e) => (window.SPICY_TITLES && window.SPICY_TITLES[e.id]) || "The story";
   const spicyHTML = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
   const spicyParts = (e) => {
     const sp = spicyFor(e); if (!sp) return "";
@@ -1011,7 +1012,7 @@
     return sp.map((t, k) => `${labels[k] ? `<h3 class="sp-h">${esc(labels[k])}</h3>` : ""}<p>${spicyHTML(t)}</p>`).join("");
   };
   const storyBlock = (e) => spicyFor(e)
-    ? `<section class="block story spicy"><h2>The story <span class="tag">18+</span></h2>${spicyParts(e)}<p class="hint">Every joke is a real step, in order. Retell it and you’ve got the chain.</p></section>`
+    ? `<section class="block story spicy"><h2>${esc(spicyTitle(e))} <span class="tag">18+</span></h2>${spicyParts(e)}<p class="hint">Every joke is a real step, in order. Retell it and you’ve got the chain.</p></section>`
     : e.hook ? `<section class="block story"><h2>The story</h2><p>${esc(e.hook)}</p></section>` : "";
 
   /* ---------- sections: essays | pathways ---------- */
@@ -1341,7 +1342,7 @@
         return;
       }
       if (L.phase === "prime") inner = `
-        <h2>The story first</h2>
+        <h2>${spicyFor(e) ? esc(spicyTitle(e)) : "The story first"}</h2>
         <p class="hint">Read it like a story, not a list. Each part below is one part of the essay, and every scene is a real step in the right order. Then you’ll learn the parts one at a time.</p>
         ${spicyFor(e) ? `<div class="lf-story spicy">${spicyParts(e)}</div>`
           : `${e.hook ? `<div class="lf-story"><p>${esc(e.hook)}</p></div>` : ""}<ol class="lf-map">${parts.map((p) => `<li><b>${esc(p.label)}</b><span>${p.to - p.from} steps</span></li>`).join("")}</ol>`}
