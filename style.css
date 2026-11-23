@@ -1092,3 +1092,57 @@ body.focus-mode { background: var(--paper); }
 }
 .flow li[data-li] { cursor: pointer; }
 .flow li[data-li]:hover { filter: brightness(1.12); }
+
+/* Spicy stories */
+.story.spicy p, .lf-story p { font: 400 1.04rem/1.7 var(--sans, inherit); font-style: normal; }
+.story.spicy b, .lf-story b { color: var(--accent); font-weight: 600; }
+.sp-h { margin: 1rem 0 0.25rem; font-size: 0.95rem; color: var(--blue); }
+.lf-story { background: var(--surface); border: 1px solid rgba(226, 183, 20, 0.35); border-radius: 14px; padding: 0.4rem 1rem 0.6rem; margin: 0.6rem 0 1rem; }
+.lf-story.small { padding: 0.2rem 0.9rem; }
+.lf-story .sp-h:first-child { margin-top: 0.6rem; }
+.lf-now { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.3rem; }
+.switch { display: inline-flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: 600; }
+.switch input { width: 1.15rem; height: 1.15rem; accent-color: var(--accent); }
+
+/* On call */
+.call-n { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 1rem; }
+.call-n b { font-size: 1.3rem; color: var(--accent); }
+.call-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: 0.5rem; margin: 0.6rem 0 1.2rem; }
+.call-pick { display: grid; gap: 0.15rem; text-align: left; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; padding: 0.6rem 0.7rem; font: inherit; cursor: pointer; }
+.call-pick.on { border-color: var(--accent); background: rgba(226, 183, 20, 0.08); }
+.call-pick.due:not(.on) { border-color: rgba(224, 99, 111, 0.6); }
+.cp-q { font: 600 0.75rem var(--mono); color: var(--blue); }
+.cp-t { font-weight: 600; font-size: 0.92rem; line-height: 1.25; }
+.cp-s { font-size: 0.72rem; color: var(--muted); }
+.call-room { padding-top: 1rem; padding-bottom: 9rem; }
+.call-top { display: flex; justify-content: space-between; gap: 1rem; color: var(--muted); font-size: 0.85rem; }
+.call-top .ct-who { color: #6fcf8e; }
+.call-bar { height: 4px; background: var(--raised); border-radius: 999px; overflow: hidden; margin: 0.45rem 0 1rem; }
+.call-bar i { display: block; height: 100%; background: var(--accent); transition: width 0.4s; }
+.call-title { margin: 0.1rem 0 0.2rem; font-size: 1.6rem; }
+.call-q { color: var(--blue); margin: 0 0 0.8rem; font-size: 0.95rem; }
+.call-timer { font: 600 3rem/1 var(--mono); color: var(--accent); text-align: center; margin: 0.6rem 0; }
+.call-timer.low { color: var(--red); }
+.call-cues { font-size: 1.15rem; line-height: 1.7; padding-left: 1.4rem; }
+.call-count { text-align: center; color: var(--muted); }
+.call-count b { color: var(--accent); font-size: 1.3rem; }
+.call-hints { text-align: center; }
+.hintw { display: inline-block; margin: 0.2rem; padding: 0.25rem 0.6rem; border-radius: 8px; background: rgba(226, 183, 20, 0.12); color: var(--accent); font: 600 1rem var(--mono); letter-spacing: 0.08em; }
+.lf-story.chips p { line-height: 2.1; }
+.chip { display: inline; font: inherit; font-weight: 600; color: var(--accent); background: rgba(226, 183, 20, 0.1); border: 1px dashed rgba(226, 183, 20, 0.6); border-radius: 6px; padding: 0.05rem 0.3rem; cursor: pointer; }
+.chip.on { color: #16181d; background: #6fcf8e; border: 1px solid #6fcf8e; }
+.call-score { text-align: center; font-size: 1.8rem; margin: 0.8rem 0; }
+.call-score b { display: block; font: 600 2.2rem var(--mono); color: var(--accent); }
+.call-missed span { display: inline-block; margin: 0.15rem; padding: 0.2rem 0.5rem; border-radius: 6px; background: rgba(224, 99, 111, 0.12); color: var(--red); font-size: 0.9rem; }
+.call-sum { padding-left: 1.2rem; }
+.call-sum li { display: flex; justify-content: space-between; gap: 1rem; padding: 0.3rem 0; border-bottom: 1px solid var(--line); }
+.call-link { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.8rem 0; }
+.call-link input, .call-join input, .call-msg input { flex: 1 1 12rem; min-width: 0; background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 0.65rem 0.8rem; font: inherit; }
+.call-join { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1rem 0; }
+.call-chat { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; background: var(--surface); border-top: 1px solid var(--line); padding: 0.5rem 16px calc(0.6rem + env(safe-area-inset-bottom)); }
+.call-react { display: flex; gap: 0.35rem; overflow-x: auto; padding-bottom: 0.4rem; max-width: 900px; margin: 0 auto; }
+.call-react button { flex: none; background: var(--raised); color: var(--ink); border: 1px solid var(--line); border-radius: 999px; padding: 0.3rem 0.75rem; font: inherit; font-size: 0.9rem; cursor: pointer; }
+.call-msg { display: flex; gap: 0.4rem; max-width: 900px; margin: 0 auto; }
+.call-toast { position: fixed; left: 50%; top: 1rem; transform: translateX(-50%); z-index: 60; max-width: 90vw; background: var(--accent); color: var(--accent-ink); font-weight: 700; padding: 0.6rem 1.1rem; border-radius: 999px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4); animation: toastIn 0.25s ease-out; }
+.call-toast.mine { background: var(--raised); color: var(--ink); top: 3.6rem; font-weight: 500; }
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, -8px); } }

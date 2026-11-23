@@ -898,6 +898,7 @@
       <nav>
         <a href="#/">Essays</a>
         <a href="#/pathways">Pathways</a>
+        ${ONLINE && user ? `<a href="#/call">On call</a>` : ""}
         ${ONLINE && user ? `<a href="#/board">Leaderboard</a>` : ""}
         ${user && user.admin ? `<a href="#/admin">Admin</a>` : ""}
         <a href="#/how">How to study</a>
@@ -1098,6 +1099,7 @@
             <div class="actions">
               <button class="btn" data-act="draw">Draw from the jar</button>
               <a class="btn ghost" href="#/exam">Final boss: mock exam</a>
+              ${ONLINE ? `<a class="btn ghost" href="#/call">Study on call 18+</a>` : ""}
             </div>
           </div>
           <button class="jar-btn" data-act="draw" aria-label="Draw an essay from the jar">${jarSVG()}</button>
@@ -1506,6 +1508,318 @@
     const primeDone = () => { stopStep(); toRead(); };
     app.onkeydown = null;
     render();
+  };
+
+  /* ---------- On call: learn the spicy stories with your partner ----------
+     Two phones, one room. The host (the one studying) opens a room and sends the link.
+     The partner is the quizmaster: she reads each story to him, then he retells it from memory
+     while she taps every key word he says. Missed essays come back later in the same call,
+     and essays come back on later days (1, 2, 4, 7 days) until they stick.
+     Sync: each side writes only its own half of the room (h / p) and polls the other. */
+  const CALL_HOST = (code) => "essayjar:callhost:" + code;
+  const callTerms = (id) => {
+    const sp = window.SPICY && window.SPICY[id]; if (!sp) return [];
+    const seen = new Set(), out = [];
+    sp.forEach((t, part) => (t.match(/\*\*(.+?)\*\*/g) || []).forEach((m) => {
+      const w = m.slice(2, -2).trim(), k = w.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push({ w, part }); }
+    }));
+    return out;
+  };
+  const callTitle = (id) => (window.SPICY_TITLES && window.SPICY_TITLES[id]) || "The story";
+  const callRec = (id) => (S.call || {})[id] || null;
+  const CALL_GAPS = [1, 2, 4, 7];
+  const callDue = (id) => {
+    const r = callRec(id); if (!r) return false;
+    const gap = r.score < 0.8 ? 1 : CALL_GAPS[Math.min(r.n - 1, CALL_GAPS.length - 1)];
+    return diff(r.last, today()) >= gap;
+  };
+  const mask = (w) => w.split(/(\s+)/).map((p) => /\s/.test(p) ? p : p.length <= 2 ? p[0] + "_".repeat(p.length - 1) : p[0] + "_".repeat(p.length - 1)).join("");
+  const hearts = (s) => "❤️".repeat(Math.round(s * 5)) + "🤍".repeat(5 - Math.round(s * 5));
+  const tellSecs = (id) => Math.max(60, Math.min(180, callTerms(id).length * 7));
+  const callEssays = () => C.essays.filter((e) => window.SPICY && window.SPICY[e.id]);
+
+  const viewCallSetup = () => {
+    if (!ONLINE) {
+      app.innerHTML = `${topbar()}<main class="wrap"><h1 class="page-title">On call</h1><p class="callout">On call needs accounts switched on (the owner sets up the online part). Until then it can’t link two phones.</p></main>${footer()}`;
+      return;
+    }
+    if (!acct) {
+      app.innerHTML = `${topbar()}<main class="wrap"><h1 class="page-title">On call</h1><p class="callout">Log in first, so your progress from the call is saved to you.</p><div class="actions"><a class="btn" href="#/login">Log in</a></div></main>${footer()}`;
+      return;
+    }
+    const all = callEssays();
+    const due = all.filter((e) => callDue(e.id));
+    const fresh = all.filter((e) => !callRec(e.id));
+    let nNew = Math.min(4, fresh.length);
+    const picked = new Set();
+    const pickDefault = () => { picked.clear(); due.forEach((e) => picked.add(e.id)); fresh.slice(0, nNew).forEach((e) => picked.add(e.id)); };
+    pickDefault();
+    const draw = () => {
+      const mins = [...picked].reduce((s, id) => s + (callRec(id) ? 3 : 6), 0);
+      app.innerHTML = `
+        ${topbar()}
+        <main class="wrap call-setup">
+          <p class="meta">Study on a call · 18+</p>
+          <h1 class="page-title">Learn the stories together</h1>
+          <p class="lede">You both open the same room on your phones. She reads each spicy story to you, then you tell it back from memory while she taps every key word you say. Anything you miss comes back later in the call, and each story comes back on later days until it sticks.</p>
+          ${due.length ? `<h2>Due for review today <span class="tag">${due.length}</span></h2><p class="hint">These go first: you tell them from memory before hearing them again. That’s what makes them stick.</p>` : `<p class="hint">Nothing due for review today.</p>`}
+          <h2>New stories</h2>
+          <div class="call-n">
+            <button class="btn ghost small" data-c="less" ${nNew <= 0 ? "disabled" : ""}>−</button>
+            <b>${nNew}</b> new
+            <button class="btn ghost small" data-c="more" ${nNew >= Math.min(8, fresh.length) ? "disabled" : ""}>+</button>
+            <span class="hint">4–8 a day works if you actually focus.</span>
+          </div>
+          <div class="call-grid">${all.map((e) => {
+            const r = callRec(e.id);
+            return `<button class="call-pick${picked.has(e.id) ? " on" : ""}${callDue(e.id) ? " due" : ""}" data-pick="${e.id}" aria-pressed="${picked.has(e.id)}"><span class="cp-q">${qn(e)}</span><span class="cp-t">${esc(callTitle(e.id))}</span><span class="cp-s">${r ? `${hearts(r.score)}${callDue(e.id) ? " · due" : ""}` : "new"}</span></button>`;
+          }).join("")}</div>
+          <div class="actions">
+            <button class="btn" data-c="open" ${picked.size ? "" : "disabled"}>Open the room (${picked.size} ${picked.size === 1 ? "story" : "stories"}, about ${mins} min)</button>
+          </div>
+          <p class="hint">She doesn’t need an account: she just opens the link you send her.</p>
+        </main>
+        ${footer()}`;
+    };
+    app.onclick = (ev) => {
+      const b = ev.target.closest("[data-c],[data-pick]"); if (!b || !app.querySelector(".call-setup")) return;
+      if (b.dataset.pick) { const id = Number(b.dataset.pick); picked.has(id) ? picked.delete(id) : picked.add(id); return draw(); }
+      const a = b.dataset.c;
+      if (a === "less" || a === "more") { nNew = Math.max(0, Math.min(8, fresh.length, nNew + (a === "more" ? 1 : -1))); pickDefault(); return draw(); }
+      if (a === "open") {
+        const ABC = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        const code = [...Array(6)].map(() => ABC[Math.floor(Math.random() * ABC.length)]).join("");
+        const order = [...picked].sort((x, y) => (callDue(y) - callDue(x)) || (x - y));
+        const H = { v: 1, name: user.name, essays: order, kinds: Object.fromEntries(order.map((id) => [id, callRec(id) ? "review" : "new"])), msgs: [] };
+        b.disabled = true; b.textContent = "Opening…";
+        apiCall("roomPut", { token: acct.token, code, side: "h", data: H }).then((r) => {
+          if (!r || !r.ok) { b.disabled = false; b.textContent = (r && r.error) || "Couldn’t open the room. Try again."; return; }
+          session.set(CALL_HOST(code), "1");
+          location.hash = "#/call/" + code;
+        }).catch(() => { b.disabled = false; b.textContent = "Can’t reach the server. Try again."; });
+      }
+    };
+    draw();
+  };
+
+  const viewCallRoom = (code) => {
+    code = String(code || "").toUpperCase();
+    const host = session.get(CALL_HOST(code)) === "1";
+    let H = null, P = null, last = "", err = "", started = {}, seenMsgs = new Set(), firstLoad = true;
+    let putting = false, dirty = false;
+    const link = `${location.origin}${location.pathname}#/call/${code}`;
+    const putMine = () => {
+      if (putting) { dirty = true; return; }
+      putting = true; dirty = false;
+      const body = host ? { token: acct && acct.token, code, side: "h", data: H } : { code, side: "p", data: P };
+      apiCall("roomPut", body).catch(() => {}).finally(() => { putting = false; if (dirty) putMine(); });
+    };
+    const say = (text) => {
+      const mine = host ? H : P; if (!mine) return;
+      mine.msgs = [...(mine.msgs || []), { id: Date.now() + ":" + Math.random().toString(36).slice(2, 6), text: String(text).slice(0, 120) }].slice(-12);
+      seenMsgs.add(mine.msgs[mine.msgs.length - 1].id);
+      putMine();
+      toastMsg(text, true);
+    };
+    const toastMsg = (text, mine) => {
+      const t = document.createElement("div");
+      t.className = "call-toast" + (mine ? " mine" : "");
+      t.textContent = (mine ? "You: " : (host ? (P && P.name) || "Her" : (H && H.name) || "Him") + ": ") + text;
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 3800);
+    };
+    const item = () => P && P.queue && P.queue[P.i];
+    const startOf = (key) => { if (!started[key]) started[key] = Date.now(); return started[key]; };
+
+    // partner: make her half of the room the first time she joins
+    const joinAsPartner = (name) => {
+      const q = H.essays.map((id) => ({ id, kind: H.kinds[id] || "new" }));
+      P = { v: 1, name: name || "Her", i: 0, queue: q, phase: q.length ? (q[0].kind === "review" ? "tell" : "read") : "end", taps: {}, hints: {}, scores: {}, requeued: {}, msgs: [] };
+      putMine(); render();
+    };
+    const goPhase = (phase) => { P.phase = phase; putMine(); render(); };
+    const scoreNow = () => {
+      const it = item(); const terms = callTerms(it.id);
+      return terms.length ? (P.taps[P.i] || []).length / terms.length : 1;
+    };
+    const finishTell = () => {
+      const s = scoreNow();
+      P.scores[P.i] = Math.round(s * 100) / 100;
+      const it = item();
+      if (s < 0.8 && !P.requeued[it.id]) {
+        P.requeued[it.id] = 1;
+        P.queue.splice(Math.min(P.i + 3, P.queue.length), 0, { id: it.id, kind: "again" });
+      }
+      goPhase("result");
+    };
+    const nextItem = () => {
+      P.i++;
+      const it = item();
+      P.phase = !it ? "end" : it.kind === "review" ? "tell" : "read";
+      putMine(); render();
+    };
+
+    // host: save every finished attempt to his progress
+    const savedKey = "essayjar:callsaved:" + code;
+    const saveResults = () => {
+      if (!host || !P || !P.scores) return;
+      let saved = {}; try { saved = JSON.parse(session.get(savedKey) || "{}"); } catch (e2) { saved = {}; }
+      let changed = false;
+      Object.entries(P.scores).forEach(([qi, sc]) => {
+        if (saved[qi] !== undefined) return;
+        const it = P.queue[qi]; if (!it) return;
+        saved[qi] = sc; changed = true;
+        S.call = S.call || {};
+        const r = S.call[it.id] || { n: 0, last: "", score: 0 };
+        if (r.last !== today()) r.n++;
+        r.last = today(); r.score = sc; S.call[it.id] = r;
+        addXP(Math.round(10 + sc * 30));
+        logEvent("call", it.id, Math.round(sc * 100));
+      });
+      if (changed) { session.set(savedKey, JSON.stringify(saved)); save(); }
+    };
+
+    const storyHTML = (id, opts = {}) => {
+      const sp = window.SPICY[id] || [], labels = startsOf(E[id]).map(([, l]) => l);
+      return sp.map((t, k) => `<h3 class="sp-h">${esc(labels[k] || "")}</h3><p>${opts.chips ? chipify(t, id) : spicyHTML(t)}</p>`).join("");
+    };
+    const chipify = (t, id) => {
+      const terms = callTerms(id), tapped = new Set(P.taps[P.i] || []);
+      return esc(t).replace(/\*\*(.+?)\*\*/g, (m, w) => {
+        const k = terms.findIndex((x) => x.w.toLowerCase() === w.trim().toLowerCase());
+        return `<button type="button" class="chip${tapped.has(k) ? " on" : ""}" data-tap="${k}">${w}</button>`;
+      });
+    };
+    const reactions = host ? ["❤️", "😘", "🥵", "Hint please", "I got this", "Again?"] : ["😏", "🔥", "💋", "🙄", "Good boy", "Try harder", "Say it properly"];
+
+    const render = () => {
+      const keep = document.activeElement && document.activeElement.id === "callMsg" ? document.activeElement.value : null;
+      let inner = "";
+      if (err) inner = `<p class="callout">${esc(err)}</p><div class="actions"><a class="btn" href="#/">Home</a></div>`;
+      else if (!H) inner = `<p class="hint">Opening the room…</p>`;
+      else if (!host && !P) inner = `
+        <h1 class="page-title">${esc(H.name)} wants you to quiz him</h1>
+        <p class="lede">You’re the quizmaster. For each story: <b>read it to him out loud</b> (make it dirty, it helps him remember), then he <b>tells it back from memory</b> and you <b>tap every key word he says</b>. Below 80% and the story comes back later in the call. ${H.essays.length} ${H.essays.length === 1 ? "story" : "stories"} tonight. 18+.</p>
+        <form class="call-join" autocomplete="off"><input id="callName" maxlength="20" placeholder="Your name"><button class="btn" type="submit">Join</button></form>`;
+      else if (host && !P) inner = `
+        <h1 class="page-title">Room ${code}</h1>
+        <p class="lede">Send her this link on the call. When she opens it, you start.</p>
+        <div class="call-link"><input readonly value="${esc(link)}" aria-label="Room link"><button class="btn" data-k="share">${navigator.share ? "Send link" : "Copy link"}</button></div>
+        <p class="hint">Waiting for her to join…</p>`;
+      else {
+        const it = item(), total = P.queue.length;
+        const head = `<div class="call-top"><span class="ct-who">${esc(host ? (P.name || "Her") : H.name)} is in · Room ${code}</span><span class="ct-n">${Math.min(P.i + 1, total)} of ${total}</span></div>
+          <div class="call-bar"><i style="width:${(100 * Math.min(P.i, total)) / Math.max(1, total)}%"></i></div>`;
+        if (P.phase === "end" || !it) {
+          const sc = Object.entries(P.scores).map(([qi, s]) => ({ it: P.queue[qi], s }));
+          const best = {}; sc.forEach(({ it: q, s }) => { if (q) best[q.id] = s; });
+          inner = `${head}<h1 class="page-title">Done for tonight 🔥</h1>
+            <ol class="call-sum">${Object.entries(best).map(([id, s]) => `<li><span>${qn(E[id])} ${esc(callTitle(id))}</span><span>${hearts(s)}</span></li>`).join("")}</ol>
+            <p class="lede">${host ? "Saved. The ones you nailed come back in a couple of days, the shaky ones tomorrow. Do the due ones first next time." : "Thank you for helping him. Same time tomorrow?"}</p>
+            ${host ? `<div class="actions"><a class="btn" href="#/call">New call</a><a class="btn ghost" href="#/">Home</a></div>` : ""}`;
+        } else {
+          const e = E[it.id], terms = callTerms(it.id), tapped = P.taps[P.i] || [];
+          const tag = it.kind === "review" ? "Review: tell it first" : it.kind === "again" ? "Second go" : "New story";
+          const title = `<p class="meta">${qn(e)} · ${esc(tag)}</p><h1 class="call-title">${esc(callTitle(it.id))}</h1><p class="call-q">${esc(e.q)}</p>`;
+          if (P.phase === "read") inner = host
+            ? `${head}${title}<p class="lede">Listen while she reads it. Picture each scene: every joke is a real step.</p><div class="lf-story spicy">${storyHTML(it.id)}</div>`
+            : `${head}${title}<p class="lede"><b>Read this to him out loud.</b> Slowly, with feeling. The highlighted words are the ones he has to say back.</p><div class="lf-story spicy">${storyHTML(it.id)}</div>
+               <div class="actions"><button class="btn" data-k="tell">Done reading: now he tells it</button></div>`;
+          if (P.phase === "tell") {
+            const secs = tellSecs(it.id), left = Math.max(0, secs - Math.floor((Date.now() - startOf(P.i + ":tell")) / 1000));
+            const hints = (P.hints[P.i] || []).map((k) => terms[k]).filter(Boolean);
+            inner = host
+              ? `${head}${title}<div class="call-timer${left <= 10 ? " low" : ""}">${mmss(left)}</div>
+                 <p class="lede"><b>Tell her the story</b>, from the start, in your own words. Say the key words out loud.</p>
+                 <ol class="call-cues">${startsOf(e).map(([, l]) => `<li>${esc(l)}</li>`).join("")}</ol>
+                 <p class="call-count">She’s heard <b>${tapped.length}</b> of ${terms.length} key words</p>
+                 ${hints.length ? `<div class="call-hints"><p class="hint">Her hints:</p>${hints.map((h) => `<span class="hintw">${esc(mask(h.w))}</span>`).join("")}</div>` : ""}`
+              : `${head}${title}<div class="call-timer${left <= 10 ? " low" : ""}">${mmss(left)}</div>
+                 <p class="lede"><b>He tells it now.</b> Tap each highlighted word as he says it (near enough counts). Tap again to undo.</p>
+                 <div class="lf-story spicy chips">${storyHTML(it.id, { chips: true })}</div>
+                 <p class="call-count"><b>${tapped.length}</b> of ${terms.length}</p>
+                 <div class="actions"><button class="btn ghost" data-k="hint">Give a hint</button><button class="btn" data-k="done">He’s finished</button></div>`;
+          }
+          if (P.phase === "result") {
+            const s = P.scores[P.i] || 0, missed = terms.filter((_, k) => !tapped.includes(k));
+            const back = s < 0.8 && it.kind !== "again";
+            inner = `${head}${title}<div class="call-score">${hearts(s)}<b>${Math.round(s * 100)}%</b></div>
+              <p class="lede">${s >= 0.95 ? "Perfect. He knows this one." : s >= 0.8 ? "Good enough to pass. It comes back in a couple of days." : back ? "Not yet. This one comes back later tonight." : "Still shaky. It comes back tomorrow."}</p>
+              ${missed.length ? `<p class="hint">Missed:</p><div class="call-missed">${missed.map((m) => `<span>${esc(m.w)}</span>`).join("")}</div>` : ""}
+              ${host ? "" : `<div class="actions"><button class="btn" data-k="next">${P.i + 1 >= P.queue.length ? "Finish" : "Next story"}</button></div>`}`;
+          }
+        }
+      }
+      const showChat = H && P && !err;
+      app.innerHTML = `
+        <main class="wrap call-room">
+          ${inner}
+          ${showChat ? `<div class="call-chat">
+            <div class="call-react">${reactions.map((r) => `<button type="button" data-say="${esc(r)}">${esc(r)}</button>`).join("")}</div>
+            <form class="call-msg" autocomplete="off"><input id="callMsg" maxlength="120" placeholder="${host ? "Say something to her…" : "Say something to him…"}"><button class="btn small" type="submit">Send</button></form>
+          </div>` : ""}
+        </main>`;
+      if (keep !== null) { const i = document.getElementById("callMsg"); if (i) { i.value = keep; i.focus(); } }
+    };
+
+    const poll = () => apiCall("roomGet", { code }).then((r) => {
+      if (!document.querySelector(".call-room")) return;
+      if (!r || !r.ok) { if (firstLoad) { err = (r && r.error) || "Couldn’t open the room."; render(); } return; }
+      firstLoad = false;
+      if (r.h) H = host ? (H || r.h) : r.h;
+      if (!host && r.p && !P) P = r.p;
+      if (host && r.p) P = r.p;
+      const other = host ? r.p : r.h;
+      ((other && other.msgs) || []).forEach((m) => { if (!seenMsgs.has(m.id)) { seenMsgs.add(m.id); if (last) toastMsg(m.text, false); } });
+      saveResults();
+      const snap = JSON.stringify([r.h && r.h.essays, host ? r.p : null, !host ? r.h && r.h.name : null]);
+      if (snap !== last || !last) { last = snap; render(); }
+    }).catch(() => {});
+
+    app.onclick = (ev) => {
+      if (!document.querySelector(".call-room")) return;
+      const sy = ev.target.closest("[data-say]"); if (sy) return say(sy.dataset.say);
+      const k = ev.target.closest("[data-k]"); const tp = ev.target.closest("[data-tap]");
+      if (k && k.dataset.k === "share") {
+        if (navigator.share) navigator.share({ title: "Quiz me", text: "Open this and quiz me 😏", url: link }).catch(() => {});
+        else { try { navigator.clipboard.writeText(link); k.textContent = "Copied"; } catch (e2) { /* ignore */ } }
+        return;
+      }
+      if (host || !P) return;
+      if (tp) {
+        const n = Number(tp.dataset.tap); if (n < 0) return;
+        const arr = P.taps[P.i] || []; P.taps[P.i] = arr.includes(n) ? arr.filter((x) => x !== n) : [...arr, n];
+        putMine();
+        app.querySelectorAll(`[data-tap="${n}"]`).forEach((c) => c.classList.toggle("on", P.taps[P.i].includes(n)));
+        const c = app.querySelector(".call-count b"); if (c) c.textContent = P.taps[P.i].length; return;
+      }
+      if (!k) return;
+      if (k.dataset.k === "tell") goPhase("tell");
+      else if (k.dataset.k === "hint") {
+        const terms = callTerms(item().id), tapped = P.taps[P.i] || [], hs = P.hints[P.i] || [];
+        const nx = terms.findIndex((_, i) => !tapped.includes(i) && !hs.includes(i));
+        if (nx >= 0) { P.hints[P.i] = [...hs, nx]; putMine(); k.textContent = `Hint sent: ${mask(terms[nx].w)}`; }
+      }
+      else if (k.dataset.k === "done") finishTell();
+      else if (k.dataset.k === "next") nextItem();
+    };
+    app.onsubmit = (ev) => {
+      if (!document.querySelector(".call-room")) return;
+      ev.preventDefault();
+      if (ev.target.closest(".call-join")) { if (!H) return; joinAsPartner(document.getElementById("callName").value.trim()); return; }
+      if (ev.target.closest(".call-msg")) { const i = document.getElementById("callMsg"); if (i.value.trim()) { say(i.value.trim()); i.value = ""; } }
+    };
+    // timers on screen tick every second; the room is fetched every 1.5 s
+    let tick = 0;
+    clearInterval(timer);
+    timer = setInterval(() => {
+      tick++;
+      const t = app.querySelector(".call-timer");
+      if (t && P && P.phase === "tell") { const it = item(); const left = Math.max(0, tellSecs(it.id) - Math.floor((Date.now() - startOf(P.i + ":tell")) / 1000)); t.textContent = mmss(left); t.classList.toggle("low", left <= 10); }
+      if (tick % 3 === 0 && document.visibilityState === "visible") poll();
+    }, 500);
+    render(); poll();
   };
 
   /* ---------- daily review ----------
@@ -2873,7 +3187,8 @@
       boss: Number(ev.v) >= 100 ? `Defeated ${b} (${q})` : `Fought ${b} (${q}), ${ev.v}%`,
       exam: `Mock exam on ${q}, ${ev.v}%`,
       daily: `Daily review, ${ev.v} right`,
-      learn: `Learned ${q}`
+      learn: `Learned ${q}`,
+      call: `On call: told the ${q} story, ${ev.v}%`
     })[ev.k] || ev.k;
   };
   const summarize = (d, t) => {
@@ -3388,7 +3703,7 @@
     const [view, arg, arg2] = location.hash.replace(/^#\/?/, "").split("/");
     const e = E[Number(view === "game" ? arg2 : arg)];
     window.scrollTo(0, 0);
-    if (ONLINE && !user && session.get(GUEST_KEY) !== "1" && !["login", "how"].includes(view)) return viewLogin();
+    if (ONLINE && !user && session.get(GUEST_KEY) !== "1" && !["login", "how"].includes(view) && !(view === "call" && arg)) return viewLogin();
     if (view === "study" && e) return viewStudy(e);
     if (view === "learn" && e) return viewLearn(e);
     if (view === "type" && e) return viewType(e);
@@ -3397,6 +3712,7 @@
     if (view === "game" && e && arg === "gaps") return viewRush(e);
     if (view === "boss" && e) return viewRecall(e, "boss");
     if (view === "daily") return viewDaily(arg === "more");
+    if (view === "call") return arg ? viewCallRoom(arg) : viewCallSetup();
     if (view === "recall" && e) return viewRecall(e, "practice");
     if (view === "exam" && e) return viewRecall(e, "exam");
     if (view === "exam") return viewExamStart();
