@@ -1002,10 +1002,13 @@
     ...(e.chain ? [{ label: "chain", text: e.chain, keys: keyTokens(e.atoms) }] : []),
     ...(e.hook ? [{ label: "story", text: e.hook, keys: keyTokens(e.atoms) }] : [])
   ];
-  // Spicy stories (18+): opt-in per user. **x** marks key terms.
-  const spicyOn = () => !!S.spicy;
-  const spicyFor = (e) => (spicyOn() && window.SPICY && window.SPICY[e.id]) || null;
-  const spicyTitle = (e) => (window.SPICY_TITLES && window.SPICY_TITLES[e.id]) || "The story";
+  // Stories: "clean" (default), "spicy" (18+, opt-in) or "off". **x** marks key terms.
+  const storyStyle = () => S.story || (S.spicy ? "spicy" : "clean");
+  const storySet = (st) => (st === "spicy" ? window.SPICY : st === "clean" ? window.CLEAN : null) || null;
+  const storyTitles = (st) => (st === "spicy" ? window.SPICY_TITLES : window.CLEAN_TITLES) || {};
+  const spicyOn = () => storyStyle() === "spicy";
+  const spicyFor = (e) => { const set = storySet(storyStyle()); return (set && set[e.id]) || null; };
+  const spicyTitle = (e) => storyTitles(storyStyle())[e.id] || "The story";
   const spicyHTML = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
   const spicyParts = (e) => {
     const sp = spicyFor(e); if (!sp) return "";
@@ -1013,7 +1016,7 @@
     return sp.map((t, k) => `${labels[k] ? `<h3 class="sp-h">${esc(labels[k])}</h3>` : ""}<p>${spicyHTML(t)}</p>`).join("");
   };
   const storyBlock = (e) => spicyFor(e)
-    ? `<section class="block story spicy"><h2>${esc(spicyTitle(e))} <span class="tag">18+</span></h2>${spicyParts(e)}<p class="hint">The pass-level core of the essay. The chain adds the detail for marks.</p></section>`
+    ? `<section class="block story spicy"><h2>${esc(spicyTitle(e))}${spicyOn() ? ` <span class="tag">18+</span>` : ""}</h2>${spicyParts(e)}<p class="hint">The pass-level core of the essay. The chain adds the detail for marks.</p></section>`
     : e.hook ? `<section class="block story"><h2>The story</h2><p>${esc(e.hook)}</p></section>` : "";
 
   /* ---------- sections: essays | pathways ---------- */
@@ -1099,7 +1102,7 @@
             <div class="actions">
               <button class="btn" data-act="draw">Draw from the jar</button>
               <a class="btn ghost" href="#/exam">Final boss: mock exam</a>
-              ${ONLINE ? `<a class="btn ghost" href="#/call">Study on call 18+</a>` : ""}
+              ${ONLINE ? `<a class="btn ghost" href="#/call">Study on call</a>` : ""}
             </div>
           </div>
           <button class="jar-btn" data-act="draw" aria-label="Draw an essay from the jar">${jarSVG()}</button>
@@ -1518,7 +1521,7 @@
      Sync: each side writes only its own half of the room (h / p) and polls the other. */
   const CALL_HOST = (code) => "essayjar:callhost:" + code;
   const callTerms = (id) => {
-    const sp = window.SPICY && window.SPICY[id]; if (!sp) return [];
+    const set = storySet(callStyle) || window.CLEAN, sp = set && set[id]; if (!sp) return [];
     const seen = new Set(), out = [];
     sp.forEach((t, part) => (t.match(/\*\*(.+?)\*\*/g) || []).forEach((m) => {
       const w = m.slice(2, -2).trim(), k = w.toLowerCase();
@@ -1526,7 +1529,8 @@
     }));
     return out;
   };
-  const callTitle = (id) => (window.SPICY_TITLES && window.SPICY_TITLES[id]) || "The story";
+  let callStyle = "clean";
+  const callTitle = (id) => storyTitles(callStyle)[id] || "The story";
   const callRec = (id) => (S.call || {})[id] || null;
   const CALL_GAPS = [1, 2, 4, 7];
   const callDue = (id) => {
@@ -1537,7 +1541,7 @@
   const mask = (w) => w.split(/(\s+)/).map((p) => /\s/.test(p) ? p : p.length <= 2 ? p[0] + "_".repeat(p.length - 1) : p[0] + "_".repeat(p.length - 1)).join("");
   const hearts = (s) => "❤️".repeat(Math.round(s * 5)) + "🤍".repeat(5 - Math.round(s * 5));
   const tellSecs = (id) => Math.max(60, Math.min(180, callTerms(id).length * 7));
-  const callEssays = () => C.essays.filter((e) => window.SPICY && window.SPICY[e.id]);
+  const callEssays = () => C.essays.filter((e) => window.CLEAN && window.CLEAN[e.id]);
 
   const viewCallSetup = () => {
     if (!ONLINE) {
@@ -1548,6 +1552,7 @@
       app.innerHTML = `${topbar()}<main class="wrap"><h1 class="page-title">On call</h1><p class="callout">Log in first, so your progress from the call is saved to you.</p><div class="actions"><a class="btn" href="#/login">Log in</a></div></main>${footer()}`;
       return;
     }
+    callStyle = storyStyle() === "spicy" ? "spicy" : "clean";
     const all = callEssays();
     const due = all.filter((e) => callDue(e.id));
     const fresh = all.filter((e) => !callRec(e.id));
@@ -1560,7 +1565,11 @@
       app.innerHTML = `
         ${topbar()}
         <main class="wrap call-setup">
-          <p class="meta">Study on a call · 18+</p>
+          <p class="meta">Study on a call</p>
+          <div class="tabs call-style" role="group" aria-label="Story style">
+            <button type="button" data-c="clean" aria-selected="${callStyle === "clean"}">Clean stories</button>
+            <button type="button" data-c="spicy" aria-selected="${callStyle === "spicy"}">Spicy stories 18+</button>
+          </div>
           <h1 class="page-title">Learn the stories together</h1>
           <p class="lede">You both open the same room on your phones. She reads each spicy story to you, then you tell it back from memory while she taps every key word you say. Anything you miss comes back later in the call, and each story comes back on later days until it sticks.</p>
           ${due.length ? `<h2>Due for review today <span class="tag">${due.length}</span></h2><p class="hint">These go first: you tell them from memory before hearing them again. That’s what makes them stick.</p>` : `<p class="hint">Nothing due for review today.</p>`}
@@ -1586,12 +1595,13 @@
       const b = ev.target.closest("[data-c],[data-pick]"); if (!b || !app.querySelector(".call-setup")) return;
       if (b.dataset.pick) { const id = Number(b.dataset.pick); picked.has(id) ? picked.delete(id) : picked.add(id); return draw(); }
       const a = b.dataset.c;
+      if (a === "clean" || a === "spicy") { callStyle = a; return draw(); }
       if (a === "less" || a === "more") { nNew = Math.max(0, Math.min(8, fresh.length, nNew + (a === "more" ? 1 : -1))); pickDefault(); return draw(); }
       if (a === "open") {
         const ABC = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
         const code = [...Array(6)].map(() => ABC[Math.floor(Math.random() * ABC.length)]).join("");
         const order = [...picked].sort((x, y) => (callDue(y) - callDue(x)) || (x - y));
-        const H = { v: 1, name: user.name, essays: order, kinds: Object.fromEntries(order.map((id) => [id, callRec(id) ? "review" : "new"])), msgs: [] };
+        const H = { v: 1, style: callStyle, name: user.name, essays: order, kinds: Object.fromEntries(order.map((id) => [id, callRec(id) ? "review" : "new"])), msgs: [] };
         b.disabled = true; b.textContent = "Opening…";
         apiCall("roomPut", { token: acct.token, code, side: "h", data: H }).then((r) => {
           if (!r || !r.ok) { b.disabled = false; b.textContent = (r && r.error) || "Couldn’t open the room. Try again."; return; }
@@ -1648,11 +1658,25 @@
       P.scores[P.i] = Math.round(s * 100) / 100;
       const it = item();
       if (s < 0.8 && !P.requeued[it.id]) {
+        const at = Math.min(P.i + 3, P.queue.length);
         P.requeued[it.id] = 1;
-        P.queue.splice(Math.min(P.i + 3, P.queue.length), 0, { id: it.id, kind: "again" });
+        P.queue.splice(at, 0, { id: it.id, kind: "again", from: P.i });
       }
       goPhase("result");
     };
+    // Undo a tap on the wrong button: one step back at a time. Taps are kept.
+    const goBack = () => {
+      if (P.phase === "result") {
+        delete P.scores[P.i];
+        const it = item(), k = P.queue.findIndex((q, j) => j > P.i && q.kind === "again" && q.from === P.i);
+        if (k > P.i) { P.queue.splice(k, 1); delete P.requeued[it.id]; }
+        started[P.i + ":tell"] = Date.now();
+        return goPhase("tell");
+      }
+      if (P.phase === "tell" && item() && item().kind !== "review") return goPhase("read");
+      if (P.i > 0 && (P.phase === "read" || P.phase === "tell" || P.phase === "end")) { P.i--; return goPhase("result"); }
+    };
+    const canBack = () => P && (P.phase === "result" || (P.phase === "tell" && item() && item().kind !== "review") || P.i > 0);
     const nextItem = () => {
       P.i++;
       const it = item();
@@ -1667,21 +1691,21 @@
       let saved = {}; try { saved = JSON.parse(session.get(savedKey) || "{}"); } catch (e2) { saved = {}; }
       let changed = false;
       Object.entries(P.scores).forEach(([qi, sc]) => {
-        if (saved[qi] !== undefined) return;
+        if (saved[qi] === sc) return;
         const it = P.queue[qi]; if (!it) return;
+        const redo = saved[qi] !== undefined;
         saved[qi] = sc; changed = true;
         S.call = S.call || {};
         const r = S.call[it.id] || { n: 0, last: "", score: 0 };
         if (r.last !== today()) r.n++;
         r.last = today(); r.score = sc; S.call[it.id] = r;
-        addXP(Math.round(10 + sc * 30));
-        logEvent("call", it.id, Math.round(sc * 100));
+        if (!redo) { addXP(Math.round(10 + sc * 30)); logEvent("call", it.id, Math.round(sc * 100)); }
       });
       if (changed) { session.set(savedKey, JSON.stringify(saved)); save(); }
     };
 
     const storyHTML = (id, opts = {}) => {
-      const sp = window.SPICY[id] || [], labels = startsOf(E[id]).map(([, l]) => l);
+      const sp = (storySet(callStyle) || {})[id] || [], labels = startsOf(E[id]).map(([, l]) => l);
       return sp.map((t, k) => `<h3 class="sp-h">${esc(labels[k] || "")}</h3><p>${opts.chips ? chipify(t, id) : spicyHTML(t)}</p>`).join("");
     };
     const chipify = (t, id) => {
@@ -1690,6 +1714,11 @@
         const k = terms.findIndex((x) => x.w.toLowerCase() === w.trim().toLowerCase());
         return `<button type="button" class="chip${tapped.has(k) ? " on" : ""}" data-tap="${k}">${w}</button>`;
       });
+    };
+    // her side only: lines to say in her own words, so he remembers "she told me this"
+    const teaseHTML = (id) => {
+      const t = ((callStyle === "spicy" ? window.SPICY_TEASE : window.CLEAN_TEASE) || {})[id];
+      return t && t.length ? `<div class="call-tease"><p class="ct-h">${callStyle === "spicy" ? "Then say this to him, your way 😏" : "Then say this, your way"}</p>${t.map((x) => `<p>“${esc(x)}”</p>`).join("")}<p class="hint">Make it personal: he’ll remember it was you who said it.</p></div>` : "";
     };
     const reactions = host ? ["❤️", "😘", "🥵", "Hint please", "I got this", "Again?"] : ["😏", "🔥", "💋", "🙄", "Good boy", "Try harder", "Say it properly"];
 
@@ -1700,7 +1729,7 @@
       else if (!H) inner = `<p class="hint">Opening the room…</p>`;
       else if (!host && !P) inner = `
         <h1 class="page-title">${esc(H.name)} wants you to quiz him</h1>
-        <p class="lede">You’re the quizmaster. For each story: <b>read it to him out loud</b> (make it dirty, it helps him remember), then he <b>tells it back from memory</b> and you <b>tap every key word he says</b>. Below 80% and the story comes back later in the call. ${H.essays.length} ${H.essays.length === 1 ? "story" : "stories"} tonight. 18+.</p>
+        <p class="lede">You’re the quizmaster. For each story: <b>read it to him out loud</b> ${callStyle === "spicy" ? "(make it dirty, it helps him remember)" : "(make it fun, it helps him remember)"}, then he <b>tells it back from memory</b> and you <b>tap every key word he says</b>. Below 80% and the story comes back later in the call. ${H.essays.length} ${H.essays.length === 1 ? "story" : "stories"} tonight.${callStyle === "spicy" ? " Spicy stories, 18+." : ""}</p>
         <form class="call-join" autocomplete="off"><input id="callName" maxlength="20" placeholder="Your name"><button class="btn" type="submit">Join</button></form>`;
       else if (host && !P) inner = `
         <h1 class="page-title">Room ${code}</h1>
@@ -1717,15 +1746,15 @@
           inner = `${head}<h1 class="page-title">Done for tonight 🔥</h1>
             <ol class="call-sum">${Object.entries(best).map(([id, s]) => `<li><span>${qn(E[id])} ${esc(callTitle(id))}</span><span>${hearts(s)}</span></li>`).join("")}</ol>
             <p class="lede">${host ? "Saved. The ones you nailed come back in a couple of days, the shaky ones tomorrow. Do the due ones first next time." : "Thank you for helping him. Same time tomorrow?"}</p>
-            ${host ? `<div class="actions"><a class="btn" href="#/call">New call</a><a class="btn ghost" href="#/">Home</a></div>` : ""}`;
+            ${host ? `<div class="actions"><a class="btn" href="#/call">New call</a><a class="btn ghost" href="#/">Home</a></div>` : `<div class="actions"><button class="btn ghost" data-k="back">← Back</button></div>`}`;
         } else {
           const e = E[it.id], terms = callTerms(it.id), tapped = P.taps[P.i] || [];
           const tag = it.kind === "review" ? "Review: tell it first" : it.kind === "again" ? "Second go" : "New story";
           const title = `<p class="meta">${qn(e)} · ${esc(tag)}</p><h1 class="call-title">${esc(callTitle(it.id))}</h1><p class="call-q">${esc(e.q)}</p>`;
           if (P.phase === "read") inner = host
-            ? `${head}${title}<p class="lede">Listen while she reads it. Picture each scene: every joke is a real step.</p><div class="lf-story spicy">${storyHTML(it.id)}</div>`
-            : `${head}${title}<p class="lede"><b>Read this to him out loud.</b> Slowly, with feeling. The highlighted words are the ones he has to say back.</p><div class="lf-story spicy">${storyHTML(it.id)}</div>
-               <div class="actions"><button class="btn" data-k="tell">Done reading: now he tells it</button></div>`;
+            ? `${head}${title}<p class="lede">Listen while she reads it. Picture each scene: every bit of the story is a real step.</p><div class="lf-story spicy">${storyHTML(it.id)}</div>`
+            : `${head}${title}<p class="lede"><b>Read this to him out loud.</b> Slowly, with feeling. The highlighted words are the ones he has to say back.</p><div class="lf-story spicy">${storyHTML(it.id)}</div>${teaseHTML(it.id)}
+               <div class="actions">${canBack() ? `<button class="btn ghost" data-k="back">← Back</button>` : ""}<button class="btn" data-k="tell">Done reading: now he tells it</button></div>`;
           if (P.phase === "tell") {
             const secs = tellSecs(it.id), left = Math.max(0, secs - Math.floor((Date.now() - startOf(P.i + ":tell")) / 1000));
             const hints = (P.hints[P.i] || []).map((k) => terms[k]).filter(Boolean);
@@ -1739,7 +1768,7 @@
                  <p class="lede"><b>He tells it now.</b> Tap each highlighted word as he says it (near enough counts). Tap again to undo.</p>
                  <div class="lf-story spicy chips">${storyHTML(it.id, { chips: true })}</div>
                  <p class="call-count"><b>${tapped.length}</b> of ${terms.length}</p>
-                 <div class="actions"><button class="btn ghost" data-k="hint">Give a hint</button><button class="btn" data-k="done">He’s finished</button></div>`;
+                 <div class="actions">${canBack() ? `<button class="btn ghost" data-k="back">← Back</button>` : ""}<button class="btn ghost" data-k="hint">Give a hint</button><button class="btn" data-k="done">He’s finished</button></div>`;
           }
           if (P.phase === "result") {
             const s = P.scores[P.i] || 0, missed = terms.filter((_, k) => !tapped.includes(k));
@@ -1747,7 +1776,7 @@
             inner = `${head}${title}<div class="call-score">${hearts(s)}<b>${Math.round(s * 100)}%</b></div>
               <p class="lede">${s >= 0.95 ? "Perfect. He knows this one." : s >= 0.8 ? "Good enough to pass. It comes back in a couple of days." : back ? "Not yet. This one comes back later tonight." : "Still shaky. It comes back tomorrow."}</p>
               ${missed.length ? `<p class="hint">Missed:</p><div class="call-missed">${missed.map((m) => `<span>${esc(m.w)}</span>`).join("")}</div>` : ""}
-              ${host ? "" : `<div class="actions"><button class="btn" data-k="next">${P.i + 1 >= P.queue.length ? "Finish" : "Next story"}</button></div>`}`;
+              ${host ? "" : `<div class="actions"><button class="btn ghost" data-k="back">← Back</button><button class="btn" data-k="next">${P.i + 1 >= P.queue.length ? "Finish" : "Next story"}</button></div>`}`;
           }
         }
       }
@@ -1767,7 +1796,7 @@
       if (!document.querySelector(".call-room")) return;
       if (!r || !r.ok) { if (firstLoad) { err = (r && r.error) || "Couldn’t open the room."; render(); } return; }
       firstLoad = false;
-      if (r.h) H = host ? (H || r.h) : r.h;
+      if (r.h) { H = host ? (H || r.h) : r.h; callStyle = H.style || "spicy"; }
       if (!host && r.p && !P) P = r.p;
       if (host && r.p) P = r.p;
       const other = host ? r.p : r.h;
@@ -1803,6 +1832,7 @@
       }
       else if (k.dataset.k === "done") finishTell();
       else if (k.dataset.k === "next") nextItem();
+      else if (k.dataset.k === "back") goBack();
     };
     app.onsubmit = (ev) => {
       if (!document.querySelector(".call-room")) return;
@@ -3511,9 +3541,11 @@
           <p class="saved" id="saved" hidden>Dates saved.</p>
         </form>
         <section class="block">
-          <h2>Spicy stories <span class="tag">18+</span></h2>
-          <p>Dirty, funny versions of every essay’s story: sex jokes that each carry a real step, in the right order. They show in Learn (read first) and on the notes page. Only for you, and off for everyone else unless they switch it on.</p>
-          <label class="switch"><input type="checkbox" id="spicyToggle" ${S.spicy ? "checked" : ""}> <span>Show spicy stories</span></label>
+          <h2>Stories</h2>
+          <p>Each essay has a short story with the core you need to pass. You read it first in Learn, and it’s on the notes page and in On call. Pick the version you want; it only changes your account.</p>
+          <div class="story-pick" role="radiogroup" aria-label="Story style">
+            ${[["clean", "Clean", "Everyday settings, no sex."], ["spicy", "Spicy 18+", "Dirty jokes, each one a real step."], ["off", "Off", "No stories."]].map(([v, l, d]) => `<label class="switch"><input type="radio" name="storyStyle" value="${v}" ${storyStyle() === v ? "checked" : ""}> <span><b>${l}</b> · ${d}</span></label>`).join("")}
+          </div>
         </section>
         <section class="block">
           <h2>Back up or move your progress</h2>
@@ -3534,7 +3566,7 @@
       </main>
       ${footer()}`;
 
-    document.getElementById("spicyToggle").addEventListener("change", (ev) => { S.spicy = ev.target.checked; save(); });
+    app.querySelectorAll("input[name=storyStyle]").forEach((r) => r.addEventListener("change", (ev) => { S.story = ev.target.value; S.spicy = ev.target.value === "spicy"; save(); }));
     document.getElementById("dates").addEventListener("submit", (ev) => {
       ev.preventDefault();
       const f = new FormData(ev.target);

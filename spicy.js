@@ -120,3 +120,27 @@ window.SPICY_TITLES = {
   11: "Building the cock ring", 12: "The vampire hookup", 13: "Her period and her jealous friend", 14: "Spanking marks and a double condom",
   15: "The money shot", 16: "The hospital toilet", 17: "The gangbang on the bed", 18: "The king’s orgy", 19: "The sperm bank", 20: "The creampie with nowhere to go"
 };
+/* On call: lines for HER to say to him while she reads (couples). Personal, flirty anchors
+   tied to the essay's core, so on exam day he remembers "she told me this". */
+window.SPICY_TEASE = {
+  1: ["Babe, pepsinogen is you when you wake up: soft and useless until something hot gets you going. Then you're pepsin.", "Say it with me: enterokinase gets trypsin hard, and trypsin gets everyone else hard. That's the whole small intestine."],
+  2: ["I'm the lysosome: sour, pH 5, and I take whole mitochondria in one go.", "Every hickey I give you is ubiquitin. Enough of them and you're getting chopped up by the proteasome. E3 is me choosing you."],
+  3: ["Think of me swapping you at a swingers party: your amino group goes to α-ketoglutarate, and glutamate ends up with everyone. And nobody swaps without PLP, B6, the wingman.", "ALT is A Liver Thing, AST is A Sore Ticker. If you forget that in the exam I'm never sending you anything again."],
+  4: ["Deamination is pulling out. Only GDH can pull out OR slide back in, so it's the only reversible one. Remember who taught you that.", "Transdeamination is a tag team: transaminase hands it to glutamate, GDH pulls it out as NH3."],
+  5: ["Our date: turkey, tryptophan, serotonin, happy. Then lights off, melatonin, and you fall asleep on me. Melatonin kills your sex drive, that's literally the essay.", "Darkness turns melatonin on. So in the exam, picture me turning the lights off."],
+  6: ["Getting you hard is the slow step: tyrosine hydroxylase. Then dopamine is wanting me, norepinephrine is you finishing, epinephrine is your heart pounding after.", "Parkinson's: dopamine can't get into the brain, L-DOPA can. Carbidopa stops it finishing too early outside the brain."],
+  7: ["Ammonia gets into your brain and steals α-ketoglutarate so Krebs stops and you can't get it up. And it eats glutamate so there's no GABA, no brakes.", "Liver clears it. Cirrhosis plus a shunt, it goes round the back: hyperammonemia."],
+  8: ["You can't ship NH3 raw. Glutamate is one wrap, glutamine is double-wrapped, and glutamine is the safe way to send it in blood.", "Glucose–alanine cycle is us: you send me alanine, I send you glucose back. Long distance."],
+  9: ["The urea cycle is a carousel. Ornithine keeps riding round. CPS I starts it but only if N-acetylglutamate turns it on.", "One nitrogen from NH3, one from aspartate. Fumarate goes to Krebs, Krebs sends back aspartate. Say it back to me."],
+  10: ["It's a daisy chain from phenylalanine to tyrosine down to fumarate. If PAH drops out, phenylalanine backs up: PKU, mousy-smelling piss.", "Black piss when it sits = alkaptonuria. No melanin = albinism. I'll quiz you on the toilet."],
+  11: ["We're building a ring together. Glycine plus succinyl-CoA makes ALA, then a ring, then ferrochelatase slides the iron in the hole. Heme.", "ALA synthase is the boss. Enough heme and it says no. Alcohol and barbiturates make it say yes."],
+  12: ["Your vampire boyfriend: an enzyme in heme synthesis is missing, so everything before it piles up.", "Early block: belly pain and nerves. Late block: porphyrins in the skin, burns in sunlight, red glowing teeth."],
+  13: ["Iron can't be alone or it causes trouble, like you. It's always with a protein. In with DMT1, out with ferroportin.", "Hepcidin is me being jealous: I destroy ferroportin so less iron gets in. Low iron, I calm down."],
+  14: ["Remember the marks I leave? Red, then green, then yellow: heme, biliverdin, bilirubin.", "Unconjugated is raw and greasy, rides on albumin. The liver puts two condoms on it with UGT: now it's conjugated and water-soluble."],
+  15: ["MRP-2 is the money shot into bile, and it's the slowest step. Dubin-Johnson is the guy who can't finish. Don't be him.", "Bacteria take the condoms off in the gut: urobilinogen, then stercobilin, that's why poop is brown."],
+  16: ["Only the one wearing a condom can come out in your pee. That's conjugated. That one rule solves every jaundice.", "Dark pee plus pale poop means it's blocked: obstructive. Hemolytic: no bilirubin in pee. Hepatic: both."],
+  17: ["The bed comes first: PRPP. Once you're on the bed you're committed, that's the amidotransferase. Then everyone takes a turn until IMP.", "Salvage is getting back with your ex instead of starting from scratch. HGPRT."],
+  18: ["All the purines end up as uric acid through xanthine oxidase. Too much and it crystallises in the king's big toe: gout.", "Allopurinol blocks xanthine oxidase. Lesch-Nyhan is no HGPRT, boys, self-harm. That one is serious."],
+  19: ["Every load is millions of sperm needing DNA, so ribonucleotide reductase pulls one oxygen off. ATP turns it on, dATP shuts it down.", "Methotrexate and 5-FU stop thymidine, so no DNA, cancer stops, and you'd shoot blanks."],
+  20: ["Pyrimidines: ring first, then the sugar. CPS II in the cytosol, not the mitochondria.", "Orotic aciduria is a creampie with nowhere to go: orotic acid leaks out in the pee. Fix it with uridine."]
+};
