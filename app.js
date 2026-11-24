@@ -1780,10 +1780,19 @@
     const hintPanel = (id) => {
       const qs = (window.CALL_HINTS || {})[id] || [], labels = startsOf(E[id]).map(([, l]) => l);
       const terms = callTerms(id), tapped = new Set(P.taps[P.i] || []), sent = new Set(P.hints[P.i] || []);
-      return `<div class="hint-panel"><p class="hp-h">What did he miss? Send him a question about it.</p>${qs.map((list, part) => {
-        const missed = terms.map((t, k) => ({ t, k })).filter(({ t, k }) => t.part === part && !tapped.has(k)).map(({ t }) => t.w);
-        return `<div class="hp-part${missed.length ? "" : " done"}"><p class="hp-l">${esc(labels[part] || "")}<span>${missed.length ? `missed: ${esc(missed.slice(0, 5).join(", "))}${missed.length > 5 ? "…" : ""}` : "all said ✓"}</span></p>${list.map((q) => `<button type="button" class="hp-q${sent.has(q) ? " sent" : ""}" data-hq="${esc(q)}">${sent.has(q) ? "✓ " : ""}${esc(q)}</button>`).join("")}</div>`;
-      }).join("")}</div>`;
+      // a question disappears once every key word it's about has been ticked
+      const covered = (part, kws) => {
+        const keys = String(kws || "").toLowerCase().split(";").map((x) => x.trim()).filter(Boolean);
+        let idx = terms.map((t, k) => ({ t, k })).filter(({ t }) => keys.some((kw) => t.w.toLowerCase().includes(kw)));
+        const same = idx.filter(({ t }) => t.part === part); if (same.length) idx = same;
+        return idx.length > 0 && idx.every(({ k }) => tapped.has(k));
+      };
+      const parts = qs.map((list, part) => {
+        const missed = [...new Set(terms.map((t, k) => ({ t, k })).filter(({ t, k }) => t.part === part && !tapped.has(k)).map(({ t }) => t.w))];
+        const open = list.map((h) => (Array.isArray(h) ? h : [h, ""])).filter(([q, kws]) => !covered(part, kws));
+        return { part, missed, open };
+      }).filter((x) => x.open.length && x.missed.length);
+      return `<div class="hint-panel"><p class="hp-h">${parts.length ? "What did he miss? Send him a question about it." : "He’s said everything. Nothing left to hint 🔥"}</p>${parts.map(({ part, missed, open }) => `<div class="hp-part"><p class="hp-l">${esc(labels[part] || "")}<span>missed: ${esc(missed.slice(0, 6).join(", "))}${missed.length > 6 ? "…" : ""}</span></p>${open.map(([q]) => `<button type="button" class="hp-q${sent.has(q) ? " sent" : ""}" data-hq="${esc(q)}">${sent.has(q) ? "✓ " : ""}${esc(q)}</button>`).join("")}</div>`).join("")}</div>`;
     };
     const reactions = host ? ["❤️", "😘", "🥵", "Hint please", "I got this", "Again?"] : ["😏", "🔥", "💋", "🙄", "Good boy", "Try harder", "Say it properly"];
 
@@ -1896,7 +1905,9 @@
         const arr = P.taps[P.i] || []; P.taps[P.i] = arr.includes(n) ? arr.filter((x) => x !== n) : [...arr, n];
         putMine();
         app.querySelectorAll(`[data-tap="${n}"]`).forEach((c) => c.classList.toggle("on", P.taps[P.i].includes(n)));
-        const c = app.querySelector(".call-count b"); if (c) c.textContent = P.taps[P.i].length; return;
+        const c = app.querySelector(".call-count b"); if (c) c.textContent = P.taps[P.i].length;
+        const hp = app.querySelector(".hint-panel"); if (hp && hintOpen) hp.outerHTML = hintPanel(item().id);
+        return;
       }
       if (!k) return;
       if (k.dataset.k === "tell") goPhase("tell");
