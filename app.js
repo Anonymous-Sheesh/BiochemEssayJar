@@ -1578,7 +1578,7 @@
     const all = callEssays();
     const due = all.filter((e) => callDue(e.id));
     const fresh = all.filter((e) => !callRec(e.id));
-    let nNew = Math.min(4, fresh.length);
+    let nNew = Math.min(4, fresh.length), testFirst = false;
     const picked = new Set();
     const pickDefault = () => { picked.clear(); due.forEach((e) => picked.add(e.id)); fresh.slice(0, nNew).forEach((e) => picked.add(e.id)); };
     pickDefault();
@@ -1605,8 +1605,9 @@
             <button class="btn ghost small" data-c="revweak" ${all.some((e) => callRec(e.id) && callLevel(e.id) !== "solid") ? "" : "disabled"}>Review the weak ones</button>
             <button class="btn ghost small" data-c="plan">Back to today’s plan</button>
           </div>
-          <p class="hint">Tap any story below to add or remove it. Stories you’ve done before are reviews: you tell it first, from the start, before she reads it.</p>
-          ${due.length ? `<h2>Due for review today <span class="tag">${due.length}</span></h2><p class="hint">These go first: you tell them from memory before hearing them again. That’s what makes them stick.</p>` : `<p class="hint">Nothing due for review today.</p>`}
+          <p class="hint">Tap any story below to add or remove it. Every story starts from the beginning: she reads it, then you tell it.</p>
+          <label class="switch call-tf"><input type="checkbox" data-c="testfirst" ${testFirst ? "checked" : ""}> <span>Harder: on reviews, I tell it first before she reads (sticks better, use it once you know them)</span></label>
+          ${due.length ? `<h2>Due for review today <span class="tag">${due.length}</span></h2><p class="hint">These go first.</p>` : `<p class="hint">Nothing due for review today.</p>`}
           <h2>New stories</h2>
           <div class="call-n">
             <button class="btn ghost small" data-c="less" ${nNew <= 0 ? "disabled" : ""}>−</button>
@@ -1630,6 +1631,7 @@
       if (b.dataset.pick) { const id = Number(b.dataset.pick); picked.has(id) ? picked.delete(id) : picked.add(id); return draw(); }
       const a = b.dataset.c;
       if (a === "clean" || a === "spicy") { callStyle = a; return draw(); }
+      if (a === "testfirst") { testFirst = b.checked; return; }
       if (a === "revall") { picked.clear(); all.filter((e) => callRec(e.id)).forEach((e) => picked.add(e.id)); return draw(); }
       if (a === "revweak") { picked.clear(); all.filter((e) => callRec(e.id) && callLevel(e.id) !== "solid").forEach((e) => picked.add(e.id)); return draw(); }
       if (a === "plan") { pickDefault(); return draw(); }
@@ -1638,7 +1640,7 @@
         const ABC = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
         const code = [...Array(6)].map(() => ABC[Math.floor(Math.random() * ABC.length)]).join("");
         const order = [...picked].sort((x, y) => (callDue(y) - callDue(x)) || (x - y));
-        const H = { v: 1, style: callStyle, name: user.name, essays: order, kinds: Object.fromEntries(order.map((id) => [id, callRec(id) ? "review" : "new"])), msgs: [] };
+        const H = { v: 1, style: callStyle, testFirst, name: user.name, essays: order, kinds: Object.fromEntries(order.map((id) => [id, callRec(id) ? "review" : "new"])), msgs: [] };
         b.disabled = true; b.textContent = "Opening…";
         apiCall("roomPut", { token: acct.token, code, side: "h", data: H }).then((r) => {
           if (!r || !r.ok) { b.disabled = false; b.textContent = (r && r.error) || "Couldn’t open the room. Try again."; return; }
@@ -1682,11 +1684,11 @@
     // partner: make her half of the room the first time she joins
     const joinAsPartner = (name) => {
       const q = H.essays.map((id) => ({ id, kind: H.kinds[id] || "new" }));
-      P = { v: 1, name: name || "Her", i: 0, queue: q, phase: q.length ? (q[0].kind === "review" ? "tell" : "read") : "end", taps: {}, hints: {}, scores: {}, requeued: {}, msgs: [], t0: {}, dur: {} };
+      P = { v: 1, name: name || "Her", i: 0, queue: q, phase: q.length ? (q[0].kind === "review" && H.testFirst ? "tell" : "read") : "end", taps: {}, hints: {}, scores: {}, requeued: {}, msgs: [], t0: {}, dur: {} };
       P.t0[0] = Date.now();
       putMine(); render();
     };
-    const goPhase = (phase) => { P.phase = phase; putMine(); render(); };
+    const goPhase = (phase) => { P.phase = phase; hintOpen = false; putMine(); render(); };
     const scoreNow = () => {
       const it = item(); const terms = callTerms(it.id);
       return terms.length ? (P.taps[P.i] || []).length / terms.length : 1;
@@ -1713,15 +1715,16 @@
         started[P.i + ":tell"] = Date.now();
         return goPhase("tell");
       }
-      if (P.phase === "tell" && item() && item().kind !== "review") return goPhase("read");
+      if (P.phase === "tell" && item() && !(item().kind === "review" && H.testFirst)) return goPhase("read");
       if (P.i > 0 && (P.phase === "read" || P.phase === "tell" || P.phase === "end")) { P.i--; return goPhase("result"); }
     };
-    const canBack = () => P && (P.phase === "result" || (P.phase === "tell" && item() && item().kind !== "review") || P.i > 0);
+    const canBack = () => P && (P.phase === "result" || (P.phase === "tell" && item() && !(item().kind === "review" && H.testFirst)) || P.i > 0);
     const nextItem = () => {
+      hintOpen = false;
       P.i++;
       P.t0 = P.t0 || {}; P.t0[P.i] = P.t0[P.i] || Date.now();
       const it = item();
-      P.phase = !it ? "end" : it.kind === "review" ? "tell" : "read";
+      P.phase = !it ? "end" : it.kind === "review" && H.testFirst ? "tell" : "read";
       putMine(); render();
     };
 
@@ -1772,6 +1775,16 @@
       const doneSecs = Object.entries(P.dur || {}).filter(([qi]) => Number(qi) !== P.i).reduce((a, [, v]) => a + v, 0);
       return doneSecs + (item() ? itemSecs() : 0);
     };
+    // her hint panel: pick the bit he missed, send a question that makes him think, not the word
+    let hintOpen = false;
+    const hintPanel = (id) => {
+      const qs = (window.CALL_HINTS || {})[id] || [], labels = startsOf(E[id]).map(([, l]) => l);
+      const terms = callTerms(id), tapped = new Set(P.taps[P.i] || []), sent = new Set(P.hints[P.i] || []);
+      return `<div class="hint-panel"><p class="hp-h">What did he miss? Send him a question about it.</p>${qs.map((list, part) => {
+        const missed = terms.map((t, k) => ({ t, k })).filter(({ t, k }) => t.part === part && !tapped.has(k)).map(({ t }) => t.w);
+        return `<div class="hp-part${missed.length ? "" : " done"}"><p class="hp-l">${esc(labels[part] || "")}<span>${missed.length ? `missed: ${esc(missed.slice(0, 5).join(", "))}${missed.length > 5 ? "…" : ""}` : "all said ✓"}</span></p>${list.map((q) => `<button type="button" class="hp-q${sent.has(q) ? " sent" : ""}" data-hq="${esc(q)}">${sent.has(q) ? "✓ " : ""}${esc(q)}</button>`).join("")}</div>`;
+      }).join("")}</div>`;
+    };
     const reactions = host ? ["❤️", "😘", "🥵", "Hint please", "I got this", "Again?"] : ["😏", "🔥", "💋", "🙄", "Good boy", "Try harder", "Say it properly"];
 
     const render = () => {
@@ -1793,8 +1806,7 @@
         const doneN = Object.keys(P.scores || {}).length;
         const head = `<div class="call-top"><span class="ct-who">${esc(host ? (P.name || "Her") : H.name)} is in · Room ${code}</span><span class="ct-n">${Math.min(P.i + 1, total)} of ${total}</span></div>
           <div class="call-bar"><i style="width:${(100 * Math.min(P.i, total)) / Math.max(1, total)}%"></i></div>
-          <div class="call-clock"><span>tonight <b class="cc-all">${clock(nightSecs())}</b></span><span>done <b>${doneN}</b> of ${total}</span></div>
-          ${it ? `<div class="essay-clock"><span class="ec-l">Time on this essay</span><b class="cc-item">${clock(itemSecs())}</b><span class="ec-t">aim: under ${Math.round(targetSecs(it) / 60)} min</span><span class="ec-over" hidden></span></div>` : ""}`;
+          <div class="call-clock">${it ? `<span>this essay <b class="cc-item">${clock(itemSecs())}</b></span>` : ""}<span>tonight <b class="cc-all">${clock(nightSecs())}</b></span><span>done <b>${doneN}</b> of ${total}</span></div>`;
         if (P.phase === "end" || !it) {
           const sc = Object.entries(P.scores).map(([qi, s]) => ({ it: P.queue[qi], s }));
           const best = {}; sc.forEach(({ it: q, s }) => { if (q) best[q.id] = s; });
@@ -1805,7 +1817,7 @@
             ${host ? `<div class="actions"><a class="btn" href="#/call">New call</a><a class="btn ghost" href="#/">Home</a></div>` : `<div class="actions"><button class="btn ghost" data-k="back">← Back</button></div>`}`;
         } else {
           const e = E[it.id], terms = callTerms(it.id), tapped = P.taps[P.i] || [];
-          const tag = it.kind === "review" ? "Review: tell it from the start" : it.kind === "review-read" ? "Review: she reads it first" : it.kind === "again" ? "Second go" : "New story";
+          const tag = it.kind === "review" ? (H.testFirst ? "Review: tell it from the start" : "Review: she reads it, then you tell it") : it.kind === "review-read" ? "Review: she reads it first" : it.kind === "again" ? "Second go" : "New story";
           const title = `<p class="meta">${qn(e)} · ${esc(tag)}</p><h1 class="call-title">${esc(callTitle(it.id))}</h1><p class="call-q">${esc(e.q)}</p>`;
           if (P.phase === "read") inner = host
             ? `${head}${title}<p class="lede">Listen while she reads it. Picture each scene: every bit of the story is a real step.</p><div class="lf-story spicy">${storyHTML(it.id)}</div>`
@@ -1813,18 +1825,19 @@
                <div class="actions">${canBack() ? `<button class="btn ghost" data-k="back">← Back</button>` : ""}<button class="btn" data-k="tell">Done reading: now he tells it</button></div>`;
           if (P.phase === "tell") {
             const secs = tellSecs(it.id), left = Math.max(0, secs - Math.floor((Date.now() - startOf(P.i + ":tell")) / 1000));
-            const hints = (P.hints[P.i] || []).map((k) => terms[k]).filter(Boolean);
+            const hints = (P.hints[P.i] || []).filter((h) => typeof h === "string");
             inner = host
               ? `${head}${title}<div class="call-timer${left <= 10 ? " low" : ""}">${mmss(left)}</div>
                  <p class="lede"><b>Tell her the story</b>, from the start, in your own words. Say the key words out loud.</p>
                  <ol class="call-cues">${startsOf(e).map(([, l]) => `<li>${esc(l)}</li>`).join("")}</ol>
                  <p class="call-count">She’s heard <b>${tapped.length}</b> of ${terms.length} key words</p>
-                 ${hints.length ? `<div class="call-hints"><p class="hint">Her hints:</p>${hints.map((h) => `<span class="hintw">${esc(mask(h.w))}</span>`).join("")}</div>` : ""}`
+                 ${hints.length ? `<div class="call-hints"><p class="ch-h">She’s asking:</p>${hints.map((h) => `<p class="hintq">${esc(h)}</p>`).join("")}</div>` : ""}`
               : `${head}${title}<div class="call-timer${left <= 10 ? " low" : ""}">${mmss(left)}</div>
                  <p class="lede"><b>He tells it now.</b> Tap each highlighted word as he says it (near enough counts). Tap again to undo.</p>
                  <div class="lf-story spicy chips">${storyHTML(it.id, { chips: true })}</div>
                  <p class="call-count"><b>${tapped.length}</b> of ${terms.length}</p>
-                 <div class="actions">${canBack() ? `<button class="btn ghost" data-k="back">← Back</button>` : ""}${it.kind === "review" ? `<button class="btn ghost" data-k="readfirst">He’s lost: read it first</button>` : ""}<button class="btn ghost" data-k="hint">Give a hint</button><button class="btn" data-k="done">He’s finished</button></div>`;
+                 <div class="actions">${canBack() ? `<button class="btn ghost" data-k="back">← Back</button>` : ""}${it.kind === "review" && H.testFirst ? `<button class="btn ghost" data-k="readfirst">He’s lost: read it first</button>` : ""}<button class="btn ghost" data-k="hint" aria-expanded="${!!hintOpen}">${hintOpen ? "Close hints" : "Give a hint"}</button><button class="btn" data-k="done">He’s finished</button></div>
+                 ${hintOpen ? hintPanel(it.id) : ""}`;
           }
           if (P.phase === "result") {
             const s = P.scores[P.i] || 0, missed = terms.filter((_, k) => !tapped.includes(k));
@@ -1872,6 +1885,12 @@
         return;
       }
       if (host || !P) return;
+      const hq = ev.target.closest("[data-hq]");
+      if (hq) {
+        const q = hq.dataset.hq, hs = (P.hints[P.i] || []).filter((h) => typeof h === "string");
+        if (!hs.includes(q)) { P.hints[P.i] = [...hs, q]; putMine(); }
+        hq.classList.add("sent"); hq.textContent = "✓ " + q; return;
+      }
       if (tp) {
         const n = Number(tp.dataset.tap); if (n < 0) return;
         const arr = P.taps[P.i] || []; P.taps[P.i] = arr.includes(n) ? arr.filter((x) => x !== n) : [...arr, n];
@@ -1881,11 +1900,7 @@
       }
       if (!k) return;
       if (k.dataset.k === "tell") goPhase("tell");
-      else if (k.dataset.k === "hint") {
-        const terms = callTerms(item().id), tapped = P.taps[P.i] || [], hs = P.hints[P.i] || [];
-        const nx = terms.findIndex((_, i) => !tapped.includes(i) && !hs.includes(i));
-        if (nx >= 0) { P.hints[P.i] = [...hs, nx]; putMine(); k.textContent = `Hint sent: ${mask(terms[nx].w)}`; }
-      }
+      else if (k.dataset.k === "hint") { hintOpen = !hintOpen; render(); if (hintOpen) { const hp = app.querySelector(".hint-panel"); if (hp && hp.scrollIntoView) hp.scrollIntoView({ block: "start", behavior: "smooth" }); } }
       else if (k.dataset.k === "done") finishTell();
       else if (k.dataset.k === "next") nextItem();
       else if (k.dataset.k === "back") goBack();
@@ -1927,12 +1942,7 @@
       const t = app.querySelector(".call-timer");
       if (t && P && P.phase === "tell") { const it = item(); const left = Math.max(0, tellSecs(it.id) - Math.floor((Date.now() - startOf(P.i + ":tell")) / 1000)); t.textContent = mmss(left); t.classList.toggle("low", left <= 10); }
       const ci = app.querySelector(".cc-item"), ca = app.querySelector(".cc-all");
-      if (ci) {
-        const sec = itemSecs(), over = sec - targetSecs(item()), box = ci.closest(".essay-clock"), ov = box && box.querySelector(".ec-over");
-        ci.textContent = clock(sec);
-        if (box) box.classList.toggle("over", over > 0);
-        if (ov) { ov.hidden = over <= 0; ov.textContent = over > 0 ? `+${clock(over)} wasted` : ""; }
-      }
+      if (ci) { const sec = itemSecs(); ci.textContent = clock(sec); ci.classList.toggle("over", sec > targetSecs(item())); }
       if (ca) ca.textContent = clock(nightSecs());
       if (tick % 2 === 0) checkNudge();
       if (tick % 3 === 0 && document.visibilityState === "visible") poll();

@@ -1170,3 +1170,17 @@ body.focus-mode { background: var(--paper); }
 .essay-clock.over b { color: var(--red); animation: lfpulse 1.2s ease-in-out infinite; }
 .call-room .essay-clock { position: sticky; top: 0.4rem; z-index: 25; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35); }
 .call-toast.nudge { width: min(90vw, 26rem); }
+.call-clock b.over { color: var(--red); }
+.hint-panel { margin: 1rem 0; border-top: 1px solid var(--line); padding-top: 0.6rem; }
+.hp-h { font-weight: 700; margin: 0 0 0.6rem; }
+.hp-part { margin-bottom: 0.9rem; }
+.hp-part.done { opacity: 0.55; }
+.hp-l { margin: 0 0 0.35rem; font-weight: 600; color: var(--blue); display: flex; flex-direction: column; }
+.hp-l span { font-weight: 400; font-size: 0.82rem; color: var(--red); }
+.hp-part.done .hp-l span { color: #6fcf8e; }
+.hp-q { display: block; width: 100%; text-align: left; margin: 0 0 0.35rem; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 0.55rem 0.75rem; font: inherit; font-size: 0.95rem; cursor: pointer; }
+.hp-q:hover { border-color: var(--accent); }
+.hp-q.sent { border-color: #6fcf8e; color: #6fcf8e; }
+.call-hints { background: rgba(226, 183, 20, 0.08); border: 1px solid rgba(226, 183, 20, 0.4); border-radius: 12px; padding: 0.5rem 0.9rem; margin-top: 0.8rem; }
+.ch-h { margin: 0.2rem 0 0.3rem; font-weight: 700; color: var(--accent); }
+.hintq { margin: 0 0 0.4rem; font-size: 1.1rem; }
